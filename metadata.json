@@ -1,0 +1,6 @@
+{
+  "name": "Optimizador de Rutas de Alumbrado",
+  "description": "Una aplicación para generar rutas eficientes para cuadrillas de alumbrado público. Cargue listas de eventos del sistema de telegestión y ubicaciones de depósitos para visualizar rutas optimizadas por zona en una tabla y un mapa.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
