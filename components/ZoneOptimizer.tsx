@@ -13,6 +13,49 @@ interface ZoneOptimizerProps {
   zoneData: Zone;
 }
 
+const generateRouteFilename = (zoneData: Zone): string => {
+    const today = new Date();
+    const day = String(today.getDate()).padStart(2, '0');
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const year = today.getFullYear();
+    const dateString = `${day}_${month}_${year}`;
+
+    const nameMatch = zoneData.name.match(/Hoja de Ruta (\d+)/);
+    const routeNumber = nameMatch ? nameMatch[1] : 'N/A';
+    
+    if (zoneData.cabinetData) {
+        const accountNumber = zoneData.cabinetData.accountNumber;
+        return `HR_${routeNumber}_MAX_PRIORIDAD_Posible_falla_en_Tablero_Cuenta_${accountNumber}_${dateString}`;
+    }
+
+    if (zoneData.name.includes('POSIBLE FALLA DE RAMAL/FASE')) {
+        const accountMatch = zoneData.name.match(/Cuenta: (\w+)/);
+        const accountNumber = accountMatch ? accountMatch[1] : 'SIN_CUENTA';
+        return `HR_${routeNumber}_POSIBLE_FALLA_RAMAL_Cuenta_${accountNumber}_${dateString}`;
+    }
+
+    if (zoneData.isCabinetRoute) {
+        const accountMatch = zoneData.name.match(/Cuenta: (\w+)/);
+        const accountNumber = accountMatch ? accountMatch[1] : 'SIN_CUENTA';
+
+        if (zoneData.name.includes('Evento de Voltaje')) {
+            return `HR_${routeNumber}_Evento_de_Voltaje_Cuenta_${accountNumber}_${dateString}`;
+        }
+        if (zoneData.name.includes('Acumulación de fallas en un circuito')) {
+            return `HR_${routeNumber}_Acumulacion_Fallas_Circuito_Cuenta_${accountNumber}_${dateString}`;
+        }
+        
+        // Fallback for other potential cabinet routes
+        return `HR_${routeNumber}_Evento_de_Tablero_Cuenta_${accountNumber}_${dateString}`;
+    } else {
+        const zoneNameMatch = zoneData.name.match(/-\s*(.*?)(?:\s\(|$)/);
+        const zoneName = zoneNameMatch ? zoneNameMatch[1].trim() : `Zona Desconocida`;
+        const situationMatch = zoneData.name.match(/\((.*?)\)/);
+        const situation = situationMatch ? `_${situationMatch[1].replace(/\s+/g, '_')}` : '';
+        return `HR ${routeNumber} - ${zoneName}${situation} - ${dateString}`;
+    }
+};
+
 const translateCategory = (category: string): string => {
     if (!category) return '';
     const lowerCategory = category.toLowerCase().trim();
@@ -23,6 +66,15 @@ const translateCategory = (category: string): string => {
         'inconsistent': 'Inconsistente',
     };
     return translations[lowerCategory] || category;
+};
+
+const formatTension = (tension?: string): string => {
+    if (!tension) return 'N/A';
+    const tensionStr = String(tension).trim();
+    if (tensionStr.match(/v$/i)) {
+        return tensionStr;
+    }
+    return `${tensionStr}V`;
 };
 
 const captureMapImage = (
@@ -38,12 +90,15 @@ const captureMapImage = (
     }
 
     const eventPositions: L.LatLngTuple[] = route.map((event) => [event.lat, event.lon]);
+    if (zoneData.cabinetData) {
+        eventPositions.push([zoneData.cabinetData.lat, zoneData.cabinetData.lon]);
+    }
     const bounds = L.latLngBounds(eventPositions);
 
     map.invalidateSize();
 
     map.once("moveend", async () => {
-      await new Promise((res) => setTimeout(res, 1000));
+      await new Promise((res) => setTimeout(res, 500)); 
 
       try {
         const canvas = await html2canvas(element, {
@@ -60,7 +115,7 @@ const captureMapImage = (
     });
     
     if (bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [15, 15] });
+        map.fitBounds(bounds, { padding: [25, 25] });
     } else {
         console.warn("No se pudieron crear límites válidos para el mapa del PDF.");
         resolve(null);
@@ -73,80 +128,83 @@ const exportToPDF = async (
   mapInstance: L.Map | null,
   mapElement: HTMLElement | null
 ) => {
-    const route = zoneData.optimizedRoute;
-    const zoneName = zoneData.name;
-    if (!route || route.length === 0) return;
-
     const doc = new jsPDF({ orientation: 'landscape' });
+    const title = zoneData.name;
+    const filename = `${generateRouteFilename(zoneData)}.pdf`;
 
-    // --- PAGE 1: TABLE ---
-    const today = new Date();
-    const day = String(today.getDate()).padStart(2, '0');
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const year = today.getFullYear();
-    const dateString = `${day}-${month}-${year}`;
-
-    const routeNameRegex = /(.*) - Hoja de Ruta (\d+)/;
-    const match = zoneName.match(routeNameRegex);
-    const baseName = match ? match[1].trim() : zoneName;
-    const routeNumber = match ? match[2] : '1';
-    
-    const sanitizedBaseName = baseName.replace(/[:()]/g, '').replace(/\s+/g, ' ').trim();
-    const title = `HR ${routeNumber} ${sanitizedBaseName} ${dateString}`;
-    
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(16);
     doc.text(title, 14, 22);
     
-    const tableColumn = ["#", "ID Luminaria / Tablero", "ID Antena", "ID Gabinete", "Pot(w)", "Fecha Reporte", "Categoría", "Situación", "Mensaje de Error", "Actuación / Observaciones"];
-    const tableRows: (string|number)[][] = [];
+    if (zoneData.priority === 1 && zoneData.cabinetData) {
+        const cabinet = zoneData.cabinetData;
+        const body = [
+            ['Nro. de Cuenta', cabinet.accountNumber],
+            ['Dirección', cabinet.direccion || 'N/A'],
+            ['Tensión', formatTension(cabinet.tension)],
+            ['Tarifa', cabinet.tarifa || 'N/A'],
+            ['Pot. Contratada', cabinet.potContrat || 'N/A'],
+            ['Luminarias Afectadas', cabinet.affectedLuminaires.length.toString()],
+        ];
 
-    route.forEach((event, index) => {
-        tableRows.push(event.isCabinetEvent ? [
-            index + 1, event.luminaireId, 'N/A', 'N/A', event.power,
-            event.reportedDate || 'N/A', event.category, 'N/A',
-            event.errorMessage || 'N/A', ''
-        ] : [
-            index + 1, event.luminaireId || 'N/A', event.olcId || 'N/A', event.cabinetId || 'N/A',
-            event.power, event.reportedDate || 'N/A', translateCategory(event.category) || 'N/A',
-            event.situation || 'N/A', event.errorMessage || 'N/A', ''
-        ]);
-    });
-
-    autoTable(doc, {
-        head: [tableColumn],
-        body: tableRows,
-        startY: 30,
-        theme: 'grid',
-        headStyles: { fillColor: [75, 85, 99], textColor: [255, 255, 255], fontStyle: 'bold' },
-        styles: { font: 'helvetica', cellPadding: 2.5, fontSize: 8, valign: 'middle' },
-        columnStyles: {
-            0: { cellWidth: 8 },    // #
-            1: { cellWidth: 38 },   // ID Luminaria / Tablero
-            2: { cellWidth: 38 },   // ID Antena
-            3: { cellWidth: 20 },   // ID Gabinete
-            4: { cellWidth: 12 },   // Pot(w)
-            5: { cellWidth: 20 },   // Fecha Reporte
-            6: { cellWidth: 20 },   // Categoría
-            7: { cellWidth: 20 },   // Situación
-            8: { cellWidth: 35 },   // Mensaje de Error (Reduced width)
-            9: { cellWidth: 'auto' }, // Actuación / Observaciones
-        },
-        didParseCell: (data) => {
-            if (data.section === 'body' && (data.column.index === 1 || data.column.index === 2)) {
-                data.cell.styles.fontStyle = 'bold';
+        autoTable(doc, {
+            startY: 30,
+            theme: 'striped',
+            headStyles: { fillColor: [220, 38, 38], textColor: [255, 255, 255], fontStyle: 'bold' },
+            styles: { font: 'helvetica', fontSize: 10, cellPadding: 3 },
+            columnStyles: { 0: { fontStyle: 'bold', cellWidth: 60 } },
+            body: body,
+            didDrawPage: (data) => {
+                const str = `Página ${data.pageNumber}`;
+                doc.setFont('helvetica', 'normal');
+                doc.setFontSize(8);
+                const pageHeight = doc.internal.pageSize.height || doc.internal.pageSize.getHeight();
+                doc.text(str, data.settings.margin.left, pageHeight - 10);
             }
-        },
-        didDrawPage: (data) => {
-            const str = `Página ${data.pageNumber}`;
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(8);
-            const pageHeight = doc.internal.pageSize.height || doc.internal.pageSize.getHeight();
-            doc.text(str, data.settings.margin.left, pageHeight - 10);
-        }
-    });
+        });
 
-    // --- PAGE 2: MAP ---
+    } else {
+        const route = zoneData.optimizedRoute;
+        if (!route || route.length === 0) return;
+
+        const tableColumn = ["#", "ID Luminaria / OLC", "ID Gabinete", "Potencia", "Fecha Reporte", "Categoría", "Situación", "Mensaje de Error", "Actuación / Observaciones"];
+        const tableRows: (string|number)[][] = [];
+
+        route.forEach((event, index) => {
+            tableRows.push([
+                index + 1,
+                `${event.luminaireId}\n${event.olcId || 'N/A'}`,
+                event.cabinetId || 'N/A',
+                `${event.power} W`,
+                event.reportedDate || 'N/A',
+                translateCategory(event.category) || 'N/A',
+                event.situation || 'N/A',
+                event.errorMessage || 'N/A',
+                ''
+            ]);
+        });
+
+        const headFillColor: [number, number, number] = zoneData.isCabinetRoute ? [249, 115, 22] : [75, 85, 99];
+
+        autoTable(doc, {
+            head: [tableColumn],
+            body: tableRows,
+            startY: 30,
+            theme: 'grid',
+            headStyles: { fillColor: headFillColor, textColor: [255, 255, 255], fontStyle: 'bold' },
+            styles: { font: 'helvetica', cellPadding: 2.5, fontSize: 8, valign: 'middle' },
+            columnStyles: { 0: { cellWidth: 8 }, 1: { cellWidth: 45 }, 2: { cellWidth: 20 }, 3: { cellWidth: 15 }, 4: { cellWidth: 20 }, 5: { cellWidth: 25 }, 6: { cellWidth: 25 }, 7: { cellWidth: 35 }, 8: { cellWidth: 'auto' } },
+            didParseCell: (data) => { if (data.section === 'body' && data.column.index === 1) { data.cell.styles.fontStyle = 'bold'; } },
+            didDrawPage: (data) => {
+                const str = `Página ${data.pageNumber}`;
+                doc.setFont('helvetica', 'normal');
+                doc.setFontSize(8);
+                const pageHeight = doc.internal.pageSize.height || doc.internal.pageSize.getHeight();
+                doc.text(str, data.settings.margin.left, pageHeight - 10);
+            }
+        });
+    }
+    
     const mapImage = mapInstance && mapElement ? await captureMapImage(mapInstance, mapElement, zoneData) : null;
     if (mapImage) {
         doc.addPage('landscape');
@@ -158,7 +216,7 @@ const exportToPDF = async (
         const pageWidth = doc.internal.pageSize.getWidth();
         const margin = 14;
         const availableWidth = pageWidth - (margin * 2);
-        const availableHeight = pageHeight - 40; // Space for title and footer
+        const availableHeight = pageHeight - 40;
 
         const imgProps = doc.getImageProperties(mapImage);
         const ratio = imgProps.width / imgProps.height;
@@ -174,28 +232,25 @@ const exportToPDF = async (
         const x = (pageWidth - pdfImgWidth) / 2;
         const y = 30;
         doc.addImage(mapImage, 'PNG', x, y, pdfImgWidth, pdfImgHeight);
-
-        // Add footer to map page
-        const str = `Página 2`;
+        
+        const str = `Página ${doc.getNumberOfPages()}`;
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(8);
         doc.text(str, margin, pageHeight - 10);
     }
 
-    const filename = `${title}.pdf`;
     doc.save(filename);
 };
 
 export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData }) => {
   const route = zoneData.optimizedRoute || [];
-  const totalEvents = route.length;
   const [mapInstance, setMapInstance] = useState<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [shareStatus, setShareStatus] = useState<'idle' | 'generating' | 'success'>('idle');
 
   const handleExport = async () => {
-    if (route.length === 0 || isExporting) return;
+    if (isExporting) return;
     setIsExporting(true);
     try {
       await exportToPDF(zoneData, mapInstance, mapContainerRef.current);
@@ -208,7 +263,7 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData }) => {
   };
 
   const handleShare = async () => {
-    if (route.length === 0 || shareStatus === 'generating') return;
+    if (shareStatus === 'generating') return;
     setShareStatus('generating');
 
     try {
@@ -216,21 +271,7 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData }) => {
       const blob = new Blob([htmlContent], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
       
-      const zoneName = zoneData.name;
-      const today = new Date();
-      const day = String(today.getDate()).padStart(2, '0');
-      const month = String(today.getMonth() + 1).padStart(2, '0');
-      const year = today.getFullYear();
-      const dateString = `${day}-${month}-${year}`;
-
-      const routeNameRegex = /(.*) - Hoja de Ruta (\d+)/;
-      const match = zoneName.match(routeNameRegex);
-      const baseName = match ? match[1].trim() : zoneName;
-      const routeNumber = match ? match[2] : '1';
-      
-      const sanitizedBaseName = baseName.replace(/[:()]/g, '').replace(/\s+/g, ' ').trim();
-      
-      const filename = `HR ${routeNumber} ${sanitizedBaseName} ${dateString}.html`;
+      const filename = `${generateRouteFilename(zoneData)}.html`;
 
       const a = document.createElement('a');
       a.href = url;
@@ -249,14 +290,30 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData }) => {
         setShareStatus('idle');
     }
   };
+  
+  const isMaxPriority = zoneData.priority === 1 && zoneData.cabinetData;
+  const isHighPriority = zoneData.isCabinetRoute && !isMaxPriority;
+  
+  let titleClass = 'text-indigo-700';
+  let theadClass = 'bg-slate-100';
+  let headerTextClass = 'text-slate-500';
 
+  if (isMaxPriority) {
+      titleClass = 'text-red-700';
+      theadClass = 'bg-red-100';
+      headerTextClass = 'text-red-800';
+  } else if (isHighPriority) {
+      titleClass = 'text-amber-800';
+      theadClass = 'bg-amber-100';
+      headerTextClass = 'text-amber-800';
+  }
 
   return (
     <div className="bg-white rounded-xl shadow-lg overflow-hidden">
       <div className="p-6 bg-slate-50 border-b border-slate-200">
-        <h3 className="text-xl font-bold text-indigo-700">{zoneData.name}</h3>
+        <h3 className={`text-xl font-bold ${titleClass}`}>{zoneData.name}</h3>
         <p className="text-sm text-slate-500 mt-1">
-          Total de eventos en esta hoja de ruta: {totalEvents}
+          Total de eventos en esta hoja de ruta: {route.length}
         </p>
       </div>
 
@@ -265,12 +322,12 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData }) => {
           <div className="flex justify-between items-center mb-3">
               <h4 className="flex items-center gap-2 text-lg font-semibold text-slate-700">
                   <TableIcon className="h-5 w-5" />
-                  Hoja de Ruta
+                  {isMaxPriority ? 'Resumen del Tablero Afectado' : 'Hoja de Ruta'}
               </h4>
               <div className="flex items-center gap-4">
                   <button
                       onClick={handleShare}
-                      disabled={route.length === 0 || shareStatus === 'generating'}
+                      disabled={shareStatus === 'generating'}
                       className={`flex items-center gap-1.5 text-xs font-semibold disabled:cursor-not-allowed transition-all duration-200 ${
                         shareStatus === 'success' 
                         ? 'text-green-600'
@@ -278,28 +335,13 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData }) => {
                       }`}
                       title={shareStatus === 'success' ? "¡Archivo HTML generado!" : "Generar un archivo HTML para compartir"}
                   >
-                      {shareStatus === 'idle' && (
-                          <>
-                              <ShareIcon className="h-4 w-4" />
-                              Compartir
-                          </>
-                      )}
-                      {shareStatus === 'generating' && (
-                          <>
-                              <CogIcon className="h-4 w-4 animate-spin" />
-                              Generando...
-                          </>
-                      )}
-                      {shareStatus === 'success' && (
-                          <>
-                              <CheckCircleIcon className="h-4 w-4" />
-                              ¡Archivo Generado!
-                          </>
-                      )}
+                      {shareStatus === 'idle' && <><ShareIcon className="h-4 w-4" />Compartir</>}
+                      {shareStatus === 'generating' && <><CogIcon className="h-4 w-4 animate-spin" />Generando...</>}
+                      {shareStatus === 'success' && <><CheckCircleIcon className="h-4 w-4" />¡Archivo Generado!</>}
                   </button>
                   <button
                       onClick={handleExport}
-                      disabled={route.length === 0 || isExporting}
+                      disabled={isExporting}
                       className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-indigo-600 disabled:text-slate-400 disabled:cursor-not-allowed transition-colors"
                       title="Exportar hoja de ruta a PDF"
                   >
@@ -309,86 +351,74 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData }) => {
               </div>
           </div>
           <div className="overflow-x-auto rounded-lg border border-slate-200">
-            <table className="min-w-full divide-y divide-slate-200 table-fixed">
-              <thead className="bg-slate-100">
-                <tr>
-                  <th scope="col" className="w-12 px-3 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">#</th>
-                  <th scope="col" className="w-44 px-3 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">ID Luminaria / Tablero</th>
-                  <th scope="col" className="w-44 px-3 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">ID Antena</th>
-                  <th scope="col" className="w-32 px-3 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">ID Gabinete</th>
-                  <th scope="col" className="w-24 px-3 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Potencia (W)</th>
-                  <th scope="col" className="w-32 px-3 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Fecha Reporte</th>
-                  <th scope="col" className="w-32 px-3 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Categoría</th>
-                  <th scope="col" className="w-32 px-3 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Situación</th>
-                  <th scope="col" className="px-3 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Mensaje de Error</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-slate-200">
-                {route.length > 0 ? route.map((event, index) => (
-                  event.isCabinetEvent ? (
-                      <tr key={event._internal_id || `cabinet-${index}`} className="bg-amber-50 hover:bg-amber-100">
-                        <td className="px-3 py-3 whitespace-nowrap text-sm font-medium text-amber-900 align-top">{index + 1}</td>
-                        <td className="px-3 py-3 text-sm font-semibold text-amber-900 align-top">{event.luminaireId}</td>
-                        <td className="px-3 py-3 text-sm text-amber-700 align-top">N/A</td>
-                        <td className="px-3 py-3 text-sm text-amber-700 align-top">N/A</td>
-                        <td className="px-3 py-3 text-sm text-amber-700 align-top">{event.power}</td>
-                        <td className="px-3 py-3 text-sm text-amber-700 align-top">{event.reportedDate || 'N/A'}</td>
-                        <td className="px-3 py-3 text-sm text-amber-700 align-top">
-                          <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-amber-200 text-amber-800">
-                            {event.category}
-                          </span>
-                        </td>
-                         <td className="px-3 py-3 text-sm text-amber-700 align-top">N/A</td>
-                        <td className="px-3 py-3 text-sm text-amber-700 align-top">{event.errorMessage}</td>
+             {isMaxPriority && zoneData.cabinetData ? (
+                 <table className="min-w-full">
+                     <thead className={theadClass}>
+                         <tr>
+                             <th scope="col" className={`w-1/3 px-4 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Propiedad</th>
+                             <th scope="col" className={`px-4 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Valor</th>
+                         </tr>
+                     </thead>
+                     <tbody className="bg-white divide-y divide-slate-200">
+                         <tr className="bg-red-50"><td className="px-4 py-3 text-sm font-semibold text-slate-800">Nro. de Cuenta</td><td className="px-4 py-3 text-sm font-bold text-slate-900">{zoneData.cabinetData.accountNumber}</td></tr>
+                         <tr><td className="px-4 py-3 text-sm font-semibold text-slate-800">Dirección</td><td className="px-4 py-3 text-sm text-slate-600">{zoneData.cabinetData.direccion || 'N/A'}</td></tr>
+                         <tr className="bg-red-50"><td className="px-4 py-3 text-sm font-semibold text-slate-800">Tensión</td><td className="px-4 py-3 text-sm text-slate-600">{formatTension(zoneData.cabinetData.tension)}</td></tr>
+                         <tr><td className="px-4 py-3 text-sm font-semibold text-slate-800">Tarifa</td><td className="px-4 py-3 text-sm text-slate-600">{zoneData.cabinetData.tarifa || 'N/A'}</td></tr>
+                         <tr className="bg-red-50"><td className="px-4 py-3 text-sm font-semibold text-slate-800">Pot. Contratada</td><td className="px-4 py-3 text-sm text-slate-600">{zoneData.cabinetData.potContrat || 'N/A'}</td></tr>
+                         <tr><td className="px-4 py-3 text-sm font-semibold text-slate-800">Luminarias Afectadas</td><td className="px-4 py-3 text-sm font-bold text-red-600">{zoneData.cabinetData.affectedLuminaires.length}</td></tr>
+                     </tbody>
+                 </table>
+             ) : (
+                <table className="min-w-full divide-y divide-slate-200 table-fixed">
+                  <thead className={theadClass}>
+                      <tr>
+                        <th scope="col" className={`w-12 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>#</th>
+                        <th scope="col" className={`w-44 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>ID Luminaria / OLC</th>
+                        <th scope="col" className={`w-32 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>ID Gabinete</th>
+                        <th scope="col" className={`w-24 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Potencia</th>
+                        <th scope="col" className={`w-32 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Fecha Reporte</th>
+                        <th scope="col" className={`w-32 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Categoría</th>
+                        <th scope="col" className={`w-32 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Situación</th>
+                        <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Mensaje de Error</th>
                       </tr>
-                    ) : (
-                      <tr key={event._internal_id || `event-${index}`} className="hover:bg-slate-50">
-                        <td className="px-3 py-3 whitespace-nowrap text-sm font-medium text-slate-800 align-top">{index + 1}</td>
-                        <td className="px-3 py-3 text-sm font-bold text-slate-700 align-top">{event.luminaireId || 'N/A'}</td>
-                        <td className="px-3 py-3 text-sm font-bold text-slate-700 align-top">{event.olcId || 'N/A'}</td>
-                        <td className="px-3 py-3 text-sm text-slate-600 align-top">{event.cabinetId || 'N/A'}</td>
-                        <td className="px-3 py-3 text-sm text-slate-600 align-top">{event.power}</td>
-                        <td className="px-3 py-3 text-sm text-slate-600 align-top">{event.reportedDate || 'N/A'}</td>
-                        <td className="px-3 py-3 text-sm text-slate-600 align-top">{translateCategory(event.category) || 'N/A'}</td>
-                        <td className="px-3 py-3 text-sm text-slate-600 align-top">
-                          {(() => {
-                              const situation = event.situation;
-                              if (!situation || situation === 'N/A') {
-                                  return <span className="text-slate-500">-</span>;
-                              }
-
-                              const lowerSit = situation.toLowerCase();
-                              let colorClasses = 'bg-slate-100 text-slate-800';
-                              
-                              if (lowerSit.includes('vandaliza') || lowerSit.includes('hurto') || lowerSit.includes('columna caida')) {
-                                  colorClasses = 'bg-red-100 text-red-800 font-bold';
-                              } else if (lowerSit.includes('falta poda') || lowerSit.includes('sin energia')) {
-                                  colorClasses = 'bg-yellow-100 text-yellow-800';
-                              } else if (lowerSit.includes('retirada')) {
-                                  colorClasses = 'bg-blue-100 text-blue-800';
-                              }
-
-                              return (
-                                  <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${colorClasses}`}>
-                                      {situation}
-                                  </span>
-                              );
-                          })()}
-                        </td>
-                        <td className="px-3 py-3 text-sm text-slate-600 align-top">
-                           <div className={`px-2 py-1 text-xs rounded-md ${event.errorMessage ? 'bg-red-100 text-red-800' : 'text-slate-500'}`}>
-                            {event.errorMessage || 'N/A'}
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                )) : (
-                  <tr>
-                    <td colSpan={9} className="text-center py-4 text-sm text-slate-500">No hay datos de ruta para mostrar.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-slate-200">
+                      {route.length > 0 ? route.map((event, index) => {
+                          const rowClass = isHighPriority ? 'bg-amber-50 hover:bg-amber-100' : 'hover:bg-slate-50';
+                          return (
+                            <tr key={event._internal_id || `event-${index}`} className={rowClass}>
+                                <td className="px-3 py-3 whitespace-nowrap text-sm font-medium text-slate-800 align-top">{index + 1}</td>
+                                <td className="px-3 py-3 text-sm font-bold text-black align-top">
+                                    {event.luminaireId || 'N/A'}
+                                    <div className="mt-1 text-sm font-bold text-black">{event.olcId || 'N/A'}</div>
+                                </td>
+                                <td className="px-3 py-3 text-sm text-slate-600 align-top">{event.cabinetId || 'N/A'}</td>
+                                <td className="px-3 py-3 text-sm text-slate-600 align-top">{`${event.power} W`}</td>
+                                <td className="px-3 py-3 text-sm text-slate-600 align-top">{event.reportedDate || 'N/A'}</td>
+                                <td className="px-3 py-3 text-sm text-slate-600 align-top">{translateCategory(event.category) || 'N/A'}</td>
+                                <td className="px-3 py-3 text-sm text-slate-600 align-top">
+                                {(() => {
+                                    const situation = event.situation;
+                                    if (!situation || situation === 'N/A' || situation.trim() === '-') return <span className="text-slate-500">-</span>;
+                                    const lowerSit = situation.toLowerCase();
+                                    let colorClasses = 'bg-slate-100 text-slate-800';
+                                    if (lowerSit.includes('vandaliza') || lowerSit.includes('hurto') || lowerSit.includes('columna caida')) colorClasses = 'bg-red-100 text-red-800 font-bold';
+                                    else if (lowerSit.includes('falta poda') || lowerSit.includes('sin energia')) colorClasses = 'bg-yellow-100 text-yellow-800';
+                                    else if (lowerSit.includes('retirada')) colorClasses = 'bg-blue-100 text-blue-800';
+                                    return <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${colorClasses}`}>{situation}</span>;
+                                })()}
+                                </td>
+                                <td className="px-3 py-3 text-sm text-slate-600 align-top">
+                                <div className={`px-2 py-1 text-xs rounded-md ${event.errorMessage ? 'bg-red-100 text-red-800' : 'text-slate-500'}`}>{event.errorMessage || 'N/A'}</div>
+                                </td>
+                            </tr>
+                          )
+                      }) : (
+                      <tr><td colSpan={8} className="text-center py-4 text-sm text-slate-500">No hay datos de ruta para mostrar.</td></tr>
+                      )}
+                  </tbody>
+                </table>
+             )}
           </div>
         </div>
         <div>

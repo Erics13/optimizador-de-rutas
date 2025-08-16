@@ -1,7 +1,7 @@
 
 import React, { useEffect } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap, Polyline } from 'react-leaflet';
-import L, { LatLngExpression, LatLngBoundsExpression, LatLngTuple } from 'leaflet';
+import L, { LatLngBoundsExpression, LatLngTuple } from 'leaflet';
 import { Zone } from '../types';
 
 // Fix for default icon issue with bundlers like Webpack/Vite
@@ -28,8 +28,6 @@ const createHomeIcon = () => {
   });
 };
 
-
-// Function to create a numbered icon for regular events
 const createNumberedIcon = (number: number) => {
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
@@ -45,7 +43,6 @@ const createNumberedIcon = (number: number) => {
   });
 };
 
-// Function to create a distinct numbered icon for cabinet events
 const createCabinetIcon = (number: number) => {
     const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
@@ -61,6 +58,53 @@ const createCabinetIcon = (number: number) => {
   });
 };
 
+const createSituationIcon = (number: number) => {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+      <defs><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="black" flood-opacity="0.2"/></filter></defs>
+      <circle cx="12" cy="12" r="11" fill="#1e293b" stroke="#FFFFFF" stroke-width="1.5" filter="url(#shadow)"/>
+      <text x="50%" y="50%" dominant-baseline="central" text-anchor="middle" font-size="11" font-family="Inter, sans-serif" font-weight="bold" fill="white">${number}</text>
+    </svg>`;
+  return new L.Icon({
+    iconUrl: `data:image/svg+xml;base64,${btoa(svg)}`,
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+    popupAnchor: [0, -12],
+  });
+};
+
+
+const createAffectedLuminaireIcon = (number: number) => {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22">
+      <defs><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="0.5" stdDeviation="0.5" flood-color="black" flood-opacity="0.3"/></filter></defs>
+      <circle cx="12" cy="12" r="10" fill="#fecaca" stroke="#b91c1c" stroke-width="1" filter="url(#shadow)"/>
+      <text x="50%" y="50%" dominant-baseline="central" text-anchor="middle" font-size="10" font-family="Inter, sans-serif" font-weight="bold" fill="#7f1d1d">${number}</text>
+    </svg>`;
+  return new L.Icon({
+    iconUrl: `data:image/svg+xml;base64,${btoa(svg)}`,
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+    popupAnchor: [0, -11],
+  });
+};
+
+const createCabinetLocationIcon = () => {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="36" height="36">
+      <defs><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="black" flood-opacity="0.4"/></filter></defs>
+      <rect x="2" y="2" width="20" height="20" rx="3" fill="#dc2626" stroke="#FFFFFF" stroke-width="1.5" filter="url(#shadow)"/>
+      <text x="50%" y="50%" dominant-baseline="central" text-anchor="middle" font-size="14" font-family="Inter, sans-serif" font-weight="bold" fill="white">T</text>
+    </svg>`;
+  return new L.Icon({
+    iconUrl: `data:image/svg+xml;base64,${btoa(svg)}`,
+    iconSize: [36, 36],
+    iconAnchor: [18, 36],
+    popupAnchor: [0, -36],
+  });
+};
+
+
 const translateCategory = (category: string): string => {
     if (!category) return '';
     const lowerCategory = category.toLowerCase().trim();
@@ -73,7 +117,6 @@ const translateCategory = (category: string): string => {
     return translations[lowerCategory] || category;
 };
 
-// Component to automatically adjust map view to fit all markers
 interface MapUpdaterProps {
   bounds: LatLngBoundsExpression;
 }
@@ -112,29 +155,24 @@ interface RouteMapProps {
 export const RouteMap: React.FC<RouteMapProps> = ({ zoneData, onMapReady }) => {
     const route = zoneData.optimizedRoute;
 
-    // A separate component to get the map instance and pass it up
     const MapInstanceProvider: React.FC = () => {
         const map = useMap();
-        useEffect(() => {
-            if (map && onMapReady) {
-                onMapReady(map);
-            }
-        }, [map, onMapReady]);
+        useEffect(() => { if (map && onMapReady) onMapReady(map); }, [map, onMapReady]);
         return null;
     }
 
     if (!route || route.length === 0) {
-        return (
-             <div className="w-full h-full bg-slate-200 flex items-center justify-center">
-                <p className="text-slate-500">No hay ruta para mostrar en el mapa.</p>
-             </div>
-        );
+        return ( <div className="w-full h-full bg-slate-200 flex items-center justify-center"><p className="text-slate-500">No hay ruta para mostrar en el mapa.</p></div> );
     }
-
-    const eventPositions: LatLngTuple[] = route.map(event => [event.lat, event.lon]);
+    
     const depotPosition: LatLngTuple = [zoneData.depot.lat, zoneData.depot.lon];
-    const allPointsForBounds: LatLngBoundsExpression = [depotPosition, ...eventPositions];
-    const centerPosition: LatLngTuple = eventPositions.length > 0 ? eventPositions[0] : depotPosition;
+    const allPointsForBounds: LatLngTuple[] = [depotPosition];
+    route.forEach(event => allPointsForBounds.push([event.lat, event.lon]));
+    if (zoneData.cabinetData) {
+        allPointsForBounds.push([zoneData.cabinetData.lat, zoneData.cabinetData.lon]);
+    }
+    
+    const centerPosition: LatLngTuple = route.length > 0 ? [route[0].lat, route[0].lon] : depotPosition;
     
     return (
         <MapContainer center={centerPosition} zoom={13} style={{ height: '100%', width: '100%' }} scrollWheelZoom={true}>
@@ -146,48 +184,55 @@ export const RouteMap: React.FC<RouteMapProps> = ({ zoneData, onMapReady }) => {
             />
 
             {zoneData.routePolyline && zoneData.routePolyline.length > 0 && (
-                <Polyline 
-                    positions={zoneData.routePolyline} 
-                    pathOptions={{ color: '#3b82f6', weight: 5, opacity: 0.8 }}
-                />
+                <Polyline positions={zoneData.routePolyline} pathOptions={{ color: '#3b82f6', weight: 5, opacity: 0.8 }} />
             )}
 
-            <Marker
-                position={depotPosition}
-                icon={createHomeIcon()}
-                zIndexOffset={1000}
-            >
-                <Popup>
-                    <div style={{ lineHeight: '1.5' }}>
-                        <strong style={{ fontSize: '1.1em', display: 'block', marginBottom: '4px' }}>
-                            Depósito: {zoneData.depot.zoneName}
-                        </strong>
-                        <span>Inicio y Fin de la Ruta</span>
-                    </div>
-                </Popup>
+            <Marker position={depotPosition} icon={createHomeIcon()} zIndexOffset={1000}>
+                <Popup><div style={{ lineHeight: '1.5' }}><strong style={{ fontSize: '1.1em', display: 'block', marginBottom: '4px' }}>Depósito: {zoneData.depot.zoneName}</strong><span>Inicio y Fin de la Ruta</span></div></Popup>
             </Marker>
 
-            {route.map((event, index) => (
-                <Marker 
-                    key={event._internal_id || `marker-${index}`} 
-                    position={[event.lat, event.lon]}
-                    icon={event.isCabinetEvent ? createCabinetIcon(index + 1) : createNumberedIcon(index + 1)}
-                >
-                    <Popup>
-                        <div style={{ lineHeight: '1.5' }}>
-                            <strong style={{ fontSize: '1.1em', display: 'block', marginBottom: '4px' }}>
-                                {index + 1}. {event.luminaireId}
-                            </strong>
-                            <span>ID OLC: {event.olcId || 'N/A'}</span><br/>
-                            <span>Categoría: {translateCategory(event.category) || 'N/A'}</span><br/>
-                            <span>Situación: {event.situation || 'N/A'}</span><br/>
-                            <span>Potencia: {event.power}W</span><br/>
-                            <span>Mensaje: {event.errorMessage || 'N/A'}</span><br/>
-                            <span>Fecha: {event.reportedDate || 'N/A'}</span>
-                        </div>
-                    </Popup>
-                </Marker>
-            ))}
+            {zoneData.cabinetData && (
+                 <Marker position={[zoneData.cabinetData.lat, zoneData.cabinetData.lon]} icon={createCabinetLocationIcon()} zIndexOffset={1500}>
+                    <Popup><div style={{ lineHeight: '1.5' }}><strong style={{ fontSize: '1.1em', display: 'block', marginBottom: '4px' }}>Tablero: {zoneData.cabinetData.accountNumber}</strong><span>{zoneData.cabinetData.direccion || 'Dirección no disponible'}</span></div></Popup>
+                 </Marker>
+            )}
+
+            {route.map((event, index) => {
+                const situation = event.situation?.trim();
+                const hasSituation = situation && situation !== '' && situation !== 'N/A' && situation !== '-';
+                
+                let icon;
+                let zIndexOffset = 0;
+
+                if (zoneData.cabinetData) {
+                    icon = createAffectedLuminaireIcon(index + 1);
+                    zIndexOffset = 100;
+                } else if (hasSituation) {
+                    icon = createSituationIcon(index + 1);
+                    zIndexOffset = 200;
+                } else if (zoneData.isCabinetRoute) {
+                    icon = createCabinetIcon(index + 1);
+                    zIndexOffset = 500;
+                } else {
+                    icon = createNumberedIcon(index + 1);
+                }
+
+                return (
+                    <Marker key={event._internal_id || `marker-${index}`} position={[event.lat, event.lon]} icon={icon} zIndexOffset={zIndexOffset}>
+                        <Popup>
+                            <div style={{ lineHeight: '1.5' }}>
+                                <strong style={{ fontSize: '1.1em', display: 'block', marginBottom: '4px' }}>{index + 1}. {event.luminaireId}</strong>
+                                <span>ID OLC: {event.olcId || 'N/A'}</span><br/>
+                                <span>Categoría: {translateCategory(event.category) || 'N/A'}</span><br/>
+                                <span>Situación: {event.situation || 'N/A'}</span><br/>
+                                <span>Potencia: {event.power}W</span><br/>
+                                <span>Mensaje: {event.errorMessage || 'N/A'}</span><br/>
+                                <span>Fecha: {event.reportedDate || 'N/A'}</span>
+                            </div>
+                        </Popup>
+                    </Marker>
+                );
+            })}
             
         </MapContainer>
     );

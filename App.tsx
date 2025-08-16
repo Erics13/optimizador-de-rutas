@@ -2,13 +2,16 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
+import JSZip from 'jszip';
 import { Header } from './components/Header';
 import { FileUploadButton } from './components/FileUploadButton';
 import { ZoneOptimizer } from './components/ZoneOptimizer';
-import { UploadIcon, CogIcon, CheckCircleIcon, InfoIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon } from './components/icons';
+import { SituationSummary } from './components/SituationSummary';
+import { UploadIcon, CogIcon, CheckCircleIcon, InfoIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, ExportIcon } from './components/icons';
 import type { Zone, SystemEvent, Depot, Cabinet } from './types';
 import { optimizeRouteLocally } from './services/localRouteOptimizer';
 import { fetchRoutePolyline } from './services/routingService';
+import { generateStandaloneHTML } from './services/htmlGenerator';
 
 // --- DATOS FIJOS ---
 const HARDCODED_DEPOTS: Depot[] = [
@@ -22,23 +25,29 @@ const HARDCODED_DEPOTS: Depot[] = [
 ];
 
 const HARDCODED_ZONE_MAPPING: { [key: string]: string } = {
+    // Zona A
     'aguas corrientes': 'Zona A',
-    'santa lucía': 'Zona A',
-    'cerrillos': 'Zona A',
+    'santa lucia': 'Zona A',
+    'los cerrillos': 'Zona A',
     'juanico': 'Zona A',
     'canelones': 'Zona A',
+    // Zona B
     'la paz': 'Zona B',
     'las piedras': 'Zona B',
     '18 de mayo': 'Zona B',
     'progreso': 'Zona B',
+    // Zona B1
     'nicolich': 'Zona B1',
     'paso carrasco': 'Zona B1',
     'ciudad de la costa': 'Zona B1',
+    // Zona B2
     'atlantida': 'Zona B2',
     'parque del plata': 'Zona B2',
     'salinas': 'Zona B2',
+    // Zona B3
     'soca': 'Zona B3',
     'la floresta': 'Zona B3',
+    // Zona C
     'pando': 'Zona C',
     'barros blancos': 'Zona C',
     'sauce': 'Zona C',
@@ -46,6 +55,7 @@ const HARDCODED_ZONE_MAPPING: { [key: string]: string } = {
     'toledo': 'Zona C',
     'del andaluz': 'Zona C',
     'suarez': 'Zona C',
+    // Zona D
     'tala': 'Zona D',
     'san ramon': 'Zona D',
     'montes': 'Zona D',
@@ -56,6 +66,7 @@ const HARDCODED_ZONE_MAPPING: { [key: string]: string } = {
     'san bautista': 'Zona D'
 };
 const CABINET_FAILURE_THRESHOLD = 10;
+const MAX_EVENTS_PER_ROUTE = 10;
 // --------------------
 
 // --- HELPERS ---
@@ -63,6 +74,16 @@ interface Point {
     lat: number;
     lon: number;
 }
+
+const normalizeString = (str: string): string => {
+    if (!str) return '';
+    return str
+        .trim()
+        .toLowerCase()
+        .normalize("NFD") // Decomposes combined characters into base characters and diacritics
+        .replace(/[\u0300-\u036f]/g, ""); // Removes the diacritics
+};
+
 
 const deg2rad = (deg: number): number => deg * (Math.PI / 180);
 
@@ -77,6 +98,35 @@ const getDistance = (p1: Point, p2: Point): number => {
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c; // Distance in km
 };
+
+const isCohesiveGroup = (events: SystemEvent[], maxDistanceMeters: number): boolean => {
+    if (events.length < 2) return true; // A single point is always cohesive.
+
+    const distanceThresholdKm = maxDistanceMeters / 1000;
+    const visited = new Set<string>();
+    const stack: SystemEvent[] = [events[0]];
+    if (events[0]._internal_id) {
+      visited.add(events[0]._internal_id);
+    }
+
+    while (stack.length > 0) {
+        const current = stack.pop()!;
+        
+        for (const neighbor of events) {
+            if (neighbor._internal_id && !visited.has(neighbor._internal_id)) {
+                if (getDistance(current, neighbor) <= distanceThresholdKm) {
+                    visited.add(neighbor._internal_id);
+                    stack.push(neighbor);
+                }
+            }
+        }
+    }
+
+    // If the number of visited events is the same as the total number of events,
+    // it means they are all part of a single connected component.
+    return visited.size === events.length;
+};
+
 
 const parseReportedDate = (dateStr?: string): Date => {
     if (!dateStr) return new Date(0); // Treat missing dates as very old (epoch)
@@ -108,8 +158,49 @@ const parseReportedDate = (dateStr?: string): Date => {
     
     return new Date(0); // Return oldest date if parsing fails
 };
-// ---------------
 
+const generateRouteFilename = (zoneData: Zone): string => {
+    const today = new Date();
+    const day = String(today.getDate()).padStart(2, '0');
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const year = today.getFullYear();
+    const dateString = `${day}_${month}_${year}`;
+
+    const nameMatch = zoneData.name.match(/Hoja de Ruta (\d+)/);
+    const routeNumber = nameMatch ? nameMatch[1] : 'N/A';
+    
+    if (zoneData.cabinetData) {
+        const accountNumber = zoneData.cabinetData.accountNumber;
+        return `HR_${routeNumber}_MAX_PRIORIDAD_Posible_falla_en_Tablero_Cuenta_${accountNumber}_${dateString}`;
+    }
+    
+    if (zoneData.name.includes('POSIBLE FALLA DE RAMAL/FASE')) {
+        const accountMatch = zoneData.name.match(/Cuenta: (\w+)/);
+        const accountNumber = accountMatch ? accountMatch[1] : 'SIN_CUENTA';
+        return `HR_${routeNumber}_POSIBLE_FALLA_RAMAL_Cuenta_${accountNumber}_${dateString}`;
+    }
+
+    if (zoneData.isCabinetRoute) {
+        const accountMatch = zoneData.name.match(/Cuenta: (\w+)/);
+        const accountNumber = accountMatch ? accountMatch[1] : 'SIN_CUENTA';
+        
+        if (zoneData.name.includes('Evento de Voltaje')) {
+            return `HR_${routeNumber}_Evento_de_Voltaje_Cuenta_${accountNumber}_${dateString}`;
+        }
+        if (zoneData.name.includes('Acumulación de fallas en un circuito')) {
+            return `HR_${routeNumber}_Acumulacion_Fallas_Circuito_Cuenta_${accountNumber}_${dateString}`;
+        }
+
+        // Fallback just in case
+        return `HR_${routeNumber}_Evento_de_Tablero_Cuenta_${accountNumber}_${dateString}`;
+    } else {
+        const zoneNameMatch = zoneData.name.match(/-\s*(.*?)(?:\s\(|$)/);
+        const zoneName = zoneNameMatch ? zoneNameMatch[1].trim() : `Zona Desconocida`;
+        const situationMatch = zoneData.name.match(/\((.*?)\)/);
+        const situation = situationMatch ? `_${situationMatch[1].replace(/\s+/g, '_')}` : '';
+        return `HR ${routeNumber} - ${zoneName}${situation} - ${dateString}`;
+    }
+};
 
 const parseFile = (file: File): Promise<any[]> => {
     return new Promise((resolve, reject) => {
@@ -175,9 +266,13 @@ const App: React.FC = () => {
   const [events, setEvents] = useState<SystemEvent[] | null>(null);
   const [cabinets, setCabinets] = useState<Cabinet[] | null>(null);
   const [zones, setZones] = useState<Zone[]>([]);
+  const [originalZones, setOriginalZones] = useState<Zone[]>([]);
+  const [situationSummary, setSituationSummary] = useState<{situation: string; count: number}[]>([]);
+  const [currentSituationFilter, setCurrentSituationFilter] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isParsing, setIsParsing] = useState<boolean>(false);
   const [isParsingCabinets, setIsParsingCabinets] = useState<boolean>(false);
+  const [isBulkDownloading, setIsBulkDownloading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedZone, setSelectedZone] = useState<string>('all');
   const [showFileInfo, setShowFileInfo] = useState<boolean>(false);
@@ -186,6 +281,9 @@ const App: React.FC = () => {
     setEvents(null);
     setCabinets(null);
     setZones([]);
+    setOriginalZones([]);
+    setSituationSummary([]);
+    setCurrentSituationFilter(null);
     setError(null);
     setIsLoading(false);
     setIsParsing(false);
@@ -282,6 +380,10 @@ const App: React.FC = () => {
             const accountNumber = String(findValue(d, ['Num_Cuenta', 'Nro_CUENTA', 'nro_cuenta', 'cuenta']) || '');
             const latStr = String(findValue(d, ['POINT_Y', 'lat', 'latitud']) || '0');
             const lonStr = String(findValue(d, ['POINT_X', 'lon', 'longitud']) || '0');
+            const tarifa = findValue(d, ['tarifa']);
+            const potContrat = findValue(d, ['potcontrat']);
+            const direccion = findValue(d, ['direccion']);
+            const tension = findValue(d, ['tension']);
             
             const lat = parseFloat(String(latStr).replace(',', '.'));
             const lon = parseFloat(String(lonStr).replace(',', '.'));
@@ -289,7 +391,15 @@ const App: React.FC = () => {
             if (!accountNumber) throw new Error('Fila de tablero inválida: Falta el Nro_CUENTA.');
             if (isNaN(lat) || isNaN(lon)) throw new Error(`Fila de tablero inválida (Cuenta: ${accountNumber}): Latitud o Longitud no son números.`);
 
-            return { accountNumber, lat, lon };
+            return { 
+                accountNumber, 
+                lat, 
+                lon,
+                tarifa: tarifa !== undefined ? String(tarifa) : undefined,
+                potContrat: potContrat !== undefined ? String(potContrat) : undefined,
+                direccion: direccion !== undefined ? String(direccion) : undefined,
+                tension: tension !== undefined ? String(tension) : undefined
+            };
         });
 
         if (validatedData.length === 0) {
@@ -319,8 +429,9 @@ const App: React.FC = () => {
     }
   };
 
-  const handleGenerateRoutes = useCallback(async (targetZoneName: string = 'all') => {
-    if (!events) {
+  const handleGenerateRoutes = useCallback(async (targetZoneName: string = 'all', eventsOverride?: SystemEvent[], situationName?: string) => {
+    const eventsToProcess = eventsOverride || events;
+    if (!eventsToProcess) {
       setError("Por favor, cargue el listado de eventos para continuar.");
       return;
     }
@@ -328,6 +439,7 @@ const App: React.FC = () => {
     setIsLoading(true);
     setError(null);
     setZones([]);
+    setSituationSummary([]);
 
     try {
         const depotMap = new Map<string, Depot>();
@@ -335,13 +447,18 @@ const App: React.FC = () => {
             depotMap.set(depot.zoneName.toUpperCase().trim(), depot);
         });
 
-        const eventsWithIds = events.map((event, index) => ({
+        const normalizedZoneMap = new Map<string, string>();
+        for (const [municipio, zone] of Object.entries(HARDCODED_ZONE_MAPPING)) {
+            normalizedZoneMap.set(normalizeString(municipio), zone);
+        }
+
+        const eventsWithIds = eventsToProcess.map((event, index) => ({
           ...event,
           _internal_id: event._internal_id || `event-${Date.now()}-${index}`
         }));
-
-        const cabinetEventZones: Zone[] = [];
+        
         let remainingEvents: SystemEvent[] = [...eventsWithIds];
+        const cabinetRoutes: Zone[] = [];
 
         if (cabinets) {
             const eventsByAccount = new Map<string, SystemEvent[]>();
@@ -352,78 +469,153 @@ const App: React.FC = () => {
                     eventsByAccount.get(account)!.push(event);
                 }
             });
+            
+            const cabinetMap = new Map<string, Cabinet>();
+            cabinets.forEach(cab => cabinetMap.set(cab.accountNumber.trim(), cab));
 
-            const cabinetMap = new Map(cabinets.map(c => [String(c.accountNumber).trim(), c]));
-            const individualEventsToFilterOut = new Set<string>();
-
+            const cabinetRouteJobs: { priority: number; group: SystemEvent[]; accountNumber: string; }[] = [];
+            
             for (const [accountNumber, group] of eventsByAccount.entries()) {
-                const areAllUnreachable = group.every(event => {
-                    const category = event.category.toLowerCase().trim();
-                    return category === 'unreachable' || category === 'inaccesible';
-                });
+                const unreachableEvents = group.filter(e => normalizeString(e.category) === 'unreachable' || normalizeString(e.category) === 'inaccesible');
+                const unreachableCount = unreachableEvents.length;
 
-                if (group.length >= CABINET_FAILURE_THRESHOLD && areAllUnreachable) {
-                    const cabinetInfo = cabinetMap.get(accountNumber);
-                    if (cabinetInfo) {
-                        const firstEventInGroup = group[0];
-                        let depotForCabinet: Depot | undefined;
-                        let assignedZoneKey: string | undefined;
+                if (unreachableCount >= CABINET_FAILURE_THRESHOLD) {
+                    cabinetRouteJobs.push({ priority: 1, group, accountNumber });
+                    continue;
+                }
 
-                        if (firstEventInGroup.zoneName) {
-                            const normalizedEventZone = firstEventInGroup.zoneName.toUpperCase().trim();
-                            if (depotMap.has(normalizedEventZone)) assignedZoneKey = normalizedEventZone;
-                        }
-                        if (!assignedZoneKey && firstEventInGroup.municipio) {
-                            const normalizedMunicipio = firstEventInGroup.municipio.trim().toLowerCase();
-                            const mappedZone = HARDCODED_ZONE_MAPPING[normalizedMunicipio];
-                            if (mappedZone && depotMap.has(mappedZone.toUpperCase().trim())) {
-                                assignedZoneKey = mappedZone.toUpperCase().trim();
-                            }
-                        }
-
-                        if(assignedZoneKey) depotForCabinet = depotMap.get(assignedZoneKey);
-
-                        if (depotForCabinet) {
-                            const belongsToTargetZone = targetZoneName === 'all' || depotForCabinet.zoneName === targetZoneName;
-
-                            if (belongsToTargetZone) {
-                                group.forEach(f => { if(f._internal_id) individualEventsToFilterOut.add(f._internal_id); });
-                                
-                                const cabinetEvent: SystemEvent = {
-                                    luminaireId: `Tablero Cuenta ${accountNumber}`,
-                                    olcId: 'N/A',
-                                    lat: cabinetInfo.lat,
-                                    lon: cabinetInfo.lon,
-                                    category: 'Evento de Tablero',
-                                    errorMessage: `${group.length} luminarias inaccesibles`,
-                                    power: group.reduce((sum, f) => sum + f.power, 0),
-                                    nroCuenta: accountNumber,
-                                    isCabinetEvent: true,
-                                    affectedEventsCount: group.length,
-                                    reportedDate: group.sort((a,b) => parseReportedDate(a.reportedDate).getTime() - parseReportedDate(b.reportedDate).getTime())[0]?.reportedDate,
-                                    _internal_id: `cabinet-${accountNumber}-${Date.now()}`
-                                };
-                                
-                                const optimizedCabinetRoute = [cabinetEvent];
-                                const cabinetPolyline = await fetchRoutePolyline(depotForCabinet, optimizedCabinetRoute);
-
-                                cabinetEventZones.push({
-                                    name: `PRIORITARIO: Evento de Tablero (Cuenta: ${accountNumber})`,
-                                    depot: depotForCabinet,
-                                    events: [cabinetEvent],
-                                    optimizedRoute: optimizedCabinetRoute,
-                                    routePolyline: cabinetPolyline,
-                                });
-                            }
-                        } else {
-                            console.warn(`No se pudo determinar un depósito para el evento del tablero de la cuenta ${accountNumber}. No se creará una hoja de ruta dedicada.`);
-                        }
+                if (unreachableCount >= 5 && unreachableCount < CABINET_FAILURE_THRESHOLD) {
+                    // La combinación de misma cuenta y proximidad geográfica es un indicador más fuerte
+                    // de una falla de ramal que depender del campo de texto del municipio, que puede ser inconsistente.
+                    if (isCohesiveGroup(unreachableEvents, 40)) {
+                        cabinetRouteJobs.push({ priority: 1.5, group: unreachableEvents, accountNumber });
+                        continue;
                     }
+                }
+
+                const voltageCount = group.filter(e => (normalizeString(e.errorMessage || '').includes('voltaje') || normalizeString(e.errorMessage || '').includes('voltage'))).length;
+                if (voltageCount >= CABINET_FAILURE_THRESHOLD) {
+                    cabinetRouteJobs.push({ priority: 2, group, accountNumber });
+                    continue;
+                }
+                
+                if (group.length >= CABINET_FAILURE_THRESHOLD) {
+                    cabinetRouteJobs.push({ priority: 3, group, accountNumber });
+                }
+            }
+            
+            const processedEventIds = new Set<string>();
+
+            const createCabinetRoutesForGroup = async (
+                group: SystemEvent[], 
+                priority: number, 
+                nameTemplate: string,
+                depot: Depot
+            ) => {
+                const routes: Zone[] = [];
+                let partNumber = 1;
+                const eventsToChunk = [...group];
+                
+                const chunkSize = priority === 3 ? 15 : MAX_EVENTS_PER_ROUTE;
+                const totalParts = Math.ceil(group.length / chunkSize);
+
+                while (eventsToChunk.length > 0) {
+                    const chunk = eventsToChunk.splice(0, chunkSize);
+                    const optimizedChunk = await optimizeRouteLocally(depot, chunk);
+                    const polyline = await fetchRoutePolyline(depot, optimizedChunk);
+
+                    const routeName = nameTemplate + (totalParts > 1 ? ` - Parte ${partNumber}` : '');
+                    
+                    routes.push({
+                        id: '', // Will be replaced later with a unique ID
+                        name: routeName,
+                        depot,
+                        events: optimizedChunk,
+                        optimizedRoute: optimizedChunk,
+                        routePolyline: polyline,
+                        isCabinetRoute: true,
+                        priority,
+                    });
+                    partNumber++;
+                }
+                return routes;
+            };
+
+            for (const job of cabinetRouteJobs) {
+                const firstEventInGroup = job.group[0];
+                let depotForCabinet: Depot | undefined;
+                let assignedZoneKey: string | undefined;
+
+                if (firstEventInGroup.zoneName) {
+                    const normalizedEventZone = firstEventInGroup.zoneName.toUpperCase().trim();
+                    if (depotMap.has(normalizedEventZone)) assignedZoneKey = normalizedEventZone;
+                }
+                if (!assignedZoneKey && firstEventInGroup.municipio) {
+                    const normalizedMunicipio = normalizeString(firstEventInGroup.municipio.trim());
+                    const mappedZone = normalizedZoneMap.get(normalizedMunicipio);
+                    if (mappedZone && depotMap.has(mappedZone.toUpperCase().trim())) {
+                        assignedZoneKey = mappedZone.toUpperCase().trim();
+                    }
+                }
+                if (assignedZoneKey) depotForCabinet = depotMap.get(assignedZoneKey);
+
+                if (!depotForCabinet) {
+                    console.warn(`No se pudo determinar un depósito para el evento del tablero de la cuenta ${job.accountNumber}.`);
+                    continue;
+                }
+
+                const belongsToTargetZone = targetZoneName === 'all' || depotForCabinet.zoneName === targetZoneName;
+                if (!belongsToTargetZone) continue;
+                
+                job.group.forEach(e => { if (e._internal_id) processedEventIds.add(e._internal_id); });
+                
+                if (job.priority === 1) { // Special handling for MAX PRIORITY
+                    const cabinetInfo = cabinetMap.get(job.accountNumber.trim());
+                    if (!cabinetInfo) {
+                        console.warn(`No se encontró información del tablero para la cuenta ${job.accountNumber}. Se omitirá la creación de la ruta de tablero.`);
+                        continue;
+                    }
+                    
+                    const optimizedGroup = await optimizeRouteLocally(depotForCabinet, job.group);
+                    const polyline = await fetchRoutePolyline(depotForCabinet, optimizedGroup);
+
+                    cabinetRoutes.push({
+                        id: '', // Will be replaced later
+                        name: `PRIORIDAD MÁXIMA: Posible falla en Tablero (Cuenta: ${job.accountNumber})`,
+                        depot: depotForCabinet,
+                        events: optimizedGroup,
+                        optimizedRoute: optimizedGroup,
+                        routePolyline: polyline,
+                        isCabinetRoute: true,
+                        priority: 1,
+                        cabinetData: {
+                            accountNumber: cabinetInfo.accountNumber,
+                            lat: cabinetInfo.lat,
+                            lon: cabinetInfo.lon,
+                            direccion: cabinetInfo.direccion,
+                            tension: cabinetInfo.tension,
+                            tarifa: cabinetInfo.tarifa,
+                            potContrat: cabinetInfo.potContrat,
+                            affectedLuminaires: job.group,
+                        }
+                    });
+                } else { // Priorities 1.5, 2 and 3 keep splitting logic
+                    let name = '';
+                    if (job.priority === 1.5) {
+                        name = `POSIBLE FALLA DE RAMAL/FASE (Cuenta: ${job.accountNumber})`;
+                    } else if (job.priority === 2) {
+                        name = `PRIORIDAD ALTA: Evento de Voltaje (Cuenta: ${job.accountNumber})`;
+                    } else if (job.priority === 3) {
+                        name = `PRIORITARIO: Acumulación de fallas en un circuito (Cuenta: ${job.accountNumber})`;
+                    }
+
+                    const newRoutes = await createCabinetRoutesForGroup(job.group, job.priority, name, depotForCabinet);
+                    cabinetRoutes.push(...newRoutes);
                 }
             }
 
-            if (individualEventsToFilterOut.size > 0) {
-                remainingEvents = eventsWithIds.filter(f => !f._internal_id || !individualEventsToFilterOut.has(f._internal_id));
+            if (processedEventIds.size > 0) {
+                remainingEvents = eventsWithIds.filter(f => !f._internal_id || !processedEventIds.has(f._internal_id));
             }
         }
         
@@ -439,8 +631,8 @@ const App: React.FC = () => {
             if (depotMap.has(normalizedEventZone)) assignedZoneKey = normalizedEventZone;
           }
           if (!assignedZoneKey && event.municipio) {
-            const normalizedMunicipio = event.municipio.trim().toLowerCase();
-            const mappedZone = HARDCODED_ZONE_MAPPING[normalizedMunicipio];
+            const normalizedMunicipio = normalizeString(event.municipio.trim());
+            const mappedZone = normalizedZoneMap.get(normalizedMunicipio);
             if (mappedZone && depotMap.has(mappedZone.toUpperCase().trim())) {
                  assignedZoneKey = mappedZone.toUpperCase().trim();
             }
@@ -459,20 +651,17 @@ const App: React.FC = () => {
             ? Object.keys(zonesData).filter(zoneName => zonesData[zoneName].events.length > 0)
             : Object.keys(zonesData).filter(zoneKey => depotZoneNameMap.get(zoneKey) === targetZoneName && zonesData[zoneKey].events.length > 0);
 
-        if (zoneKeysToProcess.length === 0 && cabinetEventZones.length === 0) {
+        if (zoneKeysToProcess.length === 0 && cabinetRoutes.length === 0) {
           setError("No se encontraron eventos para procesar en las zonas definidas. Verifique que los municipios en su archivo coincidan con la configuración interna.");
           setIsLoading(false);
           return;
         }
 
         const regularRoutes: Zone[] = [];
-        const MAX_EVENTS_PER_ROUTE = 10;
-
+        
         for (const zoneNameKey of zoneKeysToProcess) {
             const zoneInfo = zonesData[zoneNameKey];
             let unassignedEvents = [...zoneInfo.events];
-            let routeCounter = 1;
-            const totalChunks = Math.ceil(unassignedEvents.length / MAX_EVENTS_PER_ROUTE);
 
             while (unassignedEvents.length > 0) {
                 const chunk: SystemEvent[] = [];
@@ -505,25 +694,63 @@ const App: React.FC = () => {
 
                 const optimizedChunk = await optimizeRouteLocally(zoneInfo.depot, chunk);
                 const polyline = await fetchRoutePolyline(zoneInfo.depot, optimizedChunk);
-
-                const routeName = totalChunks > 1 
-                    ? `${zoneInfo.depot.zoneName} - Hoja de Ruta ${routeCounter++}` 
-                    : zoneInfo.depot.zoneName;
+                
+                const routeDescription = zoneInfo.depot.zoneName;
                 
                 regularRoutes.push({
-                    name: routeName,
+                    id: '', // Will be replaced later
+                    name: routeDescription,
                     depot: zoneInfo.depot,
                     events: optimizedChunk, 
                     optimizedRoute: optimizedChunk, 
                     routePolyline: polyline,
+                    isCabinetRoute: false,
+                    priority: 4,
                 });
             }
         }
         
-        const sortedRegularRoutes = regularRoutes.sort((a, b) => a.name.localeCompare(b.name, 'es', { numeric: true, sensitivity: 'base' }));
-        cabinetEventZones.sort((a, b) => a.name.localeCompare(b.name));
+        const allRoutes = [...cabinetRoutes, ...regularRoutes];
         
-        setZones([...cabinetEventZones, ...sortedRegularRoutes]);
+        allRoutes.sort((a, b) => {
+            const priorityA = a.priority ?? 99;
+            const priorityB = b.priority ?? 99;
+            if (priorityA !== priorityB) {
+                return priorityA - priorityB;
+            }
+            return a.name.localeCompare(b.name, 'es', { numeric: true, sensitivity: 'base' });
+        });
+        
+        const finalZones = allRoutes.map((zone, index) => {
+            const baseName = `Hoja de Ruta ${index + 1} - ${zone.name}`;
+            const finalName = situationName ? `${baseName} (${situationName})` : baseName;
+            return {
+                ...zone,
+                id: `zone-${Date.now()}-${index}`,
+                name: finalName,
+            };
+        });
+
+        const summaryCounts = new Map<string, number>();
+        finalZones.forEach(zone => {
+            zone.events.forEach(event => {
+                const situation = event.situation?.trim();
+                if (situation && situation !== 'N/A' && situation !== '-') {
+                    summaryCounts.set(situation, (summaryCounts.get(situation) || 0) + 1);
+                }
+            });
+        });
+
+        const summary = Array.from(summaryCounts.entries())
+            .map(([situation, count]) => ({ situation, count }))
+            .sort((a, b) => b.count - a.count);
+
+        setSituationSummary(summary);
+        setZones(finalZones);
+        setCurrentSituationFilter(situationName || null);
+        if (!situationName) {
+            setOriginalZones(finalZones);
+        }
 
     } catch (err) {
       console.error(err);
@@ -533,7 +760,73 @@ const App: React.FC = () => {
       setIsLoading(false);
     }
   }, [events, cabinets]);
+
+  const handleGenerateRoutesForSituation = useCallback(async (situation: string) => {
+    if (!events) return; // Should not happen if summary is visible, but good practice
+    const filteredEvents = events.filter(e => e.situation === situation);
+    await handleGenerateRoutes(selectedZone, filteredEvents, situation);
+  }, [events, selectedZone, handleGenerateRoutes]);
   
+  const handleRevertToOriginalRoutes = useCallback(() => {
+    setZones(originalZones);
+    setCurrentSituationFilter(null);
+
+    const summaryCounts = new Map<string, number>();
+    originalZones.forEach(zone => {
+        zone.events.forEach(event => {
+            const situation = event.situation?.trim();
+            if (situation && situation !== 'N/A' && situation !== '-') {
+                summaryCounts.set(situation, (summaryCounts.get(situation) || 0) + 1);
+            }
+        });
+    });
+    const summary = Array.from(summaryCounts.entries())
+        .map(([situation, count]) => ({ situation, count }))
+        .sort((a, b) => b.count - a.count);
+    setSituationSummary(summary);
+  }, [originalZones]);
+
+  const handleBulkDownload = async () => {
+    if (zones.length === 0 || isBulkDownloading) return;
+    setIsBulkDownloading(true);
+    setError(null);
+    try {
+        const zip = new JSZip();
+        const today = new Date();
+        const day = String(today.getDate()).padStart(2, '0');
+        const month = String(today.getMonth() + 1).padStart(2, '0');
+        const year = today.getFullYear();
+        const dateStringForZip = `${day}-${month}-${year}`;
+
+        for (const zoneData of zones) {
+            const htmlContent = generateStandaloneHTML(zoneData);
+            const filename = `${generateRouteFilename(zoneData)}.html`;
+            zip.file(filename, htmlContent);
+        }
+
+        const zipBlob = await zip.generateAsync({ type: 'blob', compression: "DEFLATE" });
+        
+        const situationPart = currentSituationFilter ? `_${currentSituationFilter.replace(/\s+/g, '_')}` : '';
+        const zipFilename = `Hojas_de_Ruta${situationPart}_${dateStringForZip}.zip`;
+
+        const url = URL.createObjectURL(zipBlob);
+        
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = zipFilename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+    } catch (error) {
+        console.error("Error durante la descarga masiva en ZIP:", error);
+        setError("Ocurrió un error al intentar generar el archivo ZIP.");
+    } finally {
+        setIsBulkDownloading(false);
+    }
+  };
+
   const canGenerate = events !== null;
 
   return (
@@ -597,6 +890,7 @@ const App: React.FC = () => {
                               <li><strong>Nro. de Cuenta:</strong> <code>Num_Cuenta</code>, <code>Nro_CUENTA</code>, <code>nro_cuenta</code></li>
                               <li><strong>Latitud:</strong> <code>POINT_Y</code>, <code>lat</code>, <code>latitud</code></li>
                               <li><strong>Longitud:</strong> <code>POINT_X</code>, <code>lon</code>, <code>longitud</code></li>
+                              <li><strong>Datos Adicionales:</strong> <code>Direccion</code>, <code>Tarifa</code>, <code>PotContrat</code>, <code>TENSION</code></li>
                           </ul>
                       </div>
                   </div>
@@ -673,13 +967,14 @@ const App: React.FC = () => {
         {!isLoading && zones.length > 0 && (
           <div className="max-w-7xl mx-auto mt-8">
              {(() => {
-                const cabinetRoutes = zones.filter(z => z.events.some(e => e.isCabinetEvent));
+                if (currentSituationFilter) return null; // Do not show this banner on filtered views
+                const cabinetRoutes = zones.filter(z => z.priority && z.priority < 4);
                 if (cabinetRoutes.length > 0) {
                   return (
                     <div className="bg-amber-100 border-l-4 border-amber-500 text-amber-800 p-4 rounded-md mb-6 flex items-start gap-3">
                       <ExclamationTriangleIcon className="h-6 w-6 text-amber-600 flex-shrink-0 mt-0.5" />
                       <div>
-                        <p className="font-bold">¡Alerta! Se detectaron {cabinetRoutes.length} evento(s) crítico(s) de tablero.</p>
+                        <p className="font-bold">¡Alerta! Se detectaron {cabinetRoutes.length} hoja(s) de ruta crítica(s) de tablero.</p>
                         <p>Se han generado hojas de ruta prioritarias para estos casos, que se muestran primero en la lista.</p>
                       </div>
                     </div>
@@ -695,9 +990,49 @@ const App: React.FC = () => {
                   </div>
                 );
              })()}
+
+            {currentSituationFilter && (
+                <div className="mb-6 flex justify-start">
+                    <button
+                        onClick={handleRevertToOriginalRoutes}
+                        className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-indigo-700 bg-indigo-100 hover:bg-indigo-200 rounded-md transition-colors"
+                    >
+                        <ArrowUturnLeftIcon className="h-5 w-5" />
+                        Volver a todas las hojas de ruta
+                    </button>
+                </div>
+            )}
+            
+            {situationSummary.length > 0 && (
+                <SituationSummary 
+                    summary={situationSummary} 
+                    onGenerateForSituation={handleGenerateRoutesForSituation}
+                />
+            )}
+
+            <div className="flex justify-end mb-6">
+              <button
+                  onClick={handleBulkDownload}
+                  disabled={isBulkDownloading}
+                  className="flex items-center justify-center gap-2 px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
+              >
+                  {isBulkDownloading ? (
+                      <>
+                          <CogIcon className="animate-spin h-5 w-5" />
+                          Descargando...
+                      </>
+                  ) : (
+                      <>
+                          <ExportIcon className="h-5 w-5" />
+                          Descargar Todos los HTML
+                      </>
+                  )}
+              </button>
+            </div>
+
             <div className="space-y-8">
               {zones.map(zone => (
-                <ZoneOptimizer key={zone.name} zoneData={zone} />
+                <ZoneOptimizer key={zone.id} zoneData={zone} />
               ))}
             </div>
           </div>
