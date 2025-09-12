@@ -1,6 +1,7 @@
 
+
 import React from 'react';
-import { CogIcon, TagIcon } from './icons';
+import { TagIcon } from './icons';
 
 interface SituationSummary {
   situation: string;
@@ -9,10 +10,9 @@ interface SituationSummary {
 
 interface SituationSummaryProps {
   summary: SituationSummary[];
-  onGenerateForSituation: (situation: string) => void;
 }
 
-export const SituationSummary: React.FC<SituationSummaryProps> = ({ summary, onGenerateForSituation }) => {
+export const SituationSummary: React.FC<SituationSummaryProps> = ({ summary }) => {
   if (summary.length === 0) {
     return null;
   }
@@ -33,9 +33,6 @@ export const SituationSummary: React.FC<SituationSummaryProps> = ({ summary, onG
               <th scope="col" className="w-24 px-4 py-2 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">
                 Cantidad
               </th>
-               <th scope="col" className="w-40 px-4 py-2 text-center text-xs font-medium text-slate-500 uppercase tracking-wider">
-                Acciones
-              </th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-slate-200">
@@ -43,16 +40,6 @@ export const SituationSummary: React.FC<SituationSummaryProps> = ({ summary, onG
               <tr key={situation}>
                 <td className="px-4 py-3 text-sm text-slate-800 font-medium">{situation}</td>
                 <td className="px-4 py-3 text-sm text-slate-600 font-bold text-right">{count}</td>
-                <td className="px-4 py-3 text-sm text-center">
-                    <button
-                        onClick={() => onGenerateForSituation(situation)}
-                        className="flex items-center justify-center gap-1.5 w-full px-3 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-100 rounded-md hover:bg-indigo-200 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-                        title={`Generar rutas solo para "${situation}"`}
-                    >
-                        <CogIcon className="h-4 w-4" />
-                        Generar Ruta
-                    </button>
-                </td>
               </tr>
             ))}
           </tbody>

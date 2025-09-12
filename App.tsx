@@ -1,5 +1,6 @@
 
-import React, { useState, useCallback, useEffect } from 'react';
+
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import JSZip from 'jszip';
@@ -7,7 +8,7 @@ import { Header } from './components/Header';
 import { FileUploadButton } from './components/FileUploadButton';
 import { ZoneOptimizer } from './components/ZoneOptimizer';
 import { SituationSummary } from './components/SituationSummary';
-import { UploadIcon, CogIcon, CheckCircleIcon, InfoIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, ExportIcon } from './components/icons';
+import { UploadIcon, CogIcon, CheckCircleIcon, InfoIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, ExportIcon, MagnifyingGlassIcon } from './components/icons';
 import type { Zone, SystemEvent, Depot, Cabinet } from './types';
 import { optimizeRouteLocally } from './services/localRouteOptimizer';
 import { fetchRoutePolyline } from './services/routingService';
@@ -128,7 +129,7 @@ const isCohesiveGroup = (events: SystemEvent[], maxDistanceMeters: number): bool
 };
 
 
-const parseReportedDate = (dateStr?: string): Date => {
+const parseReportedDate = (dateStr?: string | null): Date => {
     if (!dateStr) return new Date(0); // Treat missing dates as very old (epoch)
     
     // Handles formats like "dd/MM/yyyy HH:mm" or "dd/MM/yy HH:mm"
@@ -171,7 +172,7 @@ const generateRouteFilename = (zoneData: Zone): string => {
     
     if (zoneData.cabinetData) {
         const accountNumber = zoneData.cabinetData.accountNumber;
-        return `HR_${routeNumber}_MAX_PRIORIDAD_Posible_falla_en_Tablero_Cuenta_${accountNumber}_${dateString}`;
+        return `HR_${routeNumber}_Posible_falla_en_Tablero_Cuenta_${accountNumber}_${dateString}`;
     }
     
     if (zoneData.name.includes('POSIBLE FALLA DE RAMAL/FASE')) {
@@ -246,8 +247,8 @@ const findValue = (row: any, aliases: string[]): any | undefined => {
   return undefined;
 };
 
-const formatShortDate = (dateValue: any): string | undefined => {
-    if (!dateValue) return undefined;
+const formatShortDate = (dateValue: any): string | null => {
+    if (!dateValue) return null;
 
     const date = new Date(dateValue);
     if (date instanceof Date && !isNaN(date.valueOf())) {
@@ -264,34 +265,38 @@ const formatShortDate = (dateValue: any): string | undefined => {
 
 const App: React.FC = () => {
   const [events, setEvents] = useState<SystemEvent[] | null>(null);
-  const [cabinets, setCabinets] = useState<Cabinet[] | null>(null);
+  const [localCabinets, setLocalCabinets] = useState<Cabinet[] | null>(null);
   const [zones, setZones] = useState<Zone[]>([]);
-  const [originalZones, setOriginalZones] = useState<Zone[]>([]);
   const [situationSummary, setSituationSummary] = useState<{situation: string; count: number}[]>([]);
-  const [currentSituationFilter, setCurrentSituationFilter] = useState<string | null>(null);
+  const [generationSummary, setGenerationSummary] = useState<{ total: number; byZone: Record<string, number>; byType: { cabinet: number; regular: number } } | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [statusMessage, setStatusMessage] = useState<string>('');
   const [isParsing, setIsParsing] = useState<boolean>(false);
   const [isParsingCabinets, setIsParsingCabinets] = useState<boolean>(false);
   const [isBulkDownloading, setIsBulkDownloading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedZone, setSelectedZone] = useState<string>('all');
   const [showFileInfo, setShowFileInfo] = useState<boolean>(false);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [searchResult, setSearchResult] = useState<{ zoneId: string | null; status: 'idle' | 'found' | 'not-found' }>({ zoneId: null, status: 'idle' });
+  const searchResultTimeoutRef = useRef<number | null>(null);
 
   const handleReset = useCallback(() => {
     setEvents(null);
-    setCabinets(null);
+    setLocalCabinets(null);
     setZones([]);
-    setOriginalZones([]);
     setSituationSummary([]);
-    setCurrentSituationFilter(null);
+    setGenerationSummary(null);
     setError(null);
     setIsLoading(false);
+    setStatusMessage('');
     setIsParsing(false);
     setIsParsingCabinets(false);
     setSelectedZone('all');
     setShowFileInfo(false);
+    setSearchQuery('');
+    setSearchResult({ zoneId: null, status: 'idle' });
     
-    // Reset file input values to allow re-uploading
     const eventsInput = document.getElementById('events-upload') as HTMLInputElement;
     if (eventsInput) eventsInput.value = '';
     const cabinetsInput = document.getElementById('cabinets-upload') as HTMLInputElement;
@@ -332,24 +337,24 @@ const App: React.FC = () => {
           return { 
               luminaireId, 
               olcId, 
-              cabinetId: cabinetId !== undefined ? String(cabinetId) : undefined,
+              cabinetId: cabinetId !== undefined ? String(cabinetId) : null,
               power: isNaN(power) ? 0 : power, 
               category: String(category), 
-              errorMessage: errorMessage !== undefined ? String(errorMessage) : undefined, 
+              errorMessage: errorMessage !== undefined ? String(errorMessage) : null, 
               lat, 
               lon, 
-              zoneName: zoneName !== undefined ? String(zoneName) : undefined, 
-              municipio: municipio !== undefined ? String(municipio) : undefined, 
-              reportedDate,
-              situation: situation !== undefined ? String(situation) : undefined,
-              nroCuenta: nroCuenta !== undefined ? String(nroCuenta) : undefined
+              zoneName: zoneName !== undefined ? String(zoneName) : null, 
+              municipio: municipio !== undefined ? String(municipio) : null, 
+              reportedDate: reportedDate !== undefined ? reportedDate : null,
+              situation: situation !== undefined ? String(situation) : null,
+              nroCuenta: nroCuenta !== undefined ? String(nroCuenta) : null
           };
         });
         
         const excludedMunicipios = ['DESAFECTADOS', 'OBRA NUEVA'];
         const filteredData = validatedData.filter(event => {
             if (!event.municipio) {
-                return true; // Keep events that don't have a 'municipio' field.
+                return true;
             }
             const municipioUpper = event.municipio.trim().toUpperCase();
             return !excludedMunicipios.includes(municipioUpper);
@@ -371,7 +376,7 @@ const App: React.FC = () => {
   const processCabinetsFile = async (file: File) => {
     setIsParsingCabinets(true);
     setError(null);
-    setCabinets(null);
+    setLocalCabinets(null);
 
     try {
         const jsonData = await parseFile(file);
@@ -382,8 +387,8 @@ const App: React.FC = () => {
             const lonStr = String(findValue(d, ['POINT_X', 'lon', 'longitud']) || '0');
             const tarifa = findValue(d, ['tarifa']);
             const potContrat = findValue(d, ['potcontrat']);
-            const direccion = findValue(d, ['direccion']);
-            const tension = findValue(d, ['tension']);
+            const direccion = findValue(d, ['direccion', 'dirección']);
+            const tension = findValue(d, ['tension', 'tensión']);
             
             const lat = parseFloat(String(latStr).replace(',', '.'));
             const lon = parseFloat(String(lonStr).replace(',', '.'));
@@ -395,21 +400,21 @@ const App: React.FC = () => {
                 accountNumber, 
                 lat, 
                 lon,
-                tarifa: tarifa !== undefined ? String(tarifa) : undefined,
-                potContrat: potContrat !== undefined ? String(potContrat) : undefined,
-                direccion: direccion !== undefined ? String(direccion) : undefined,
-                tension: tension !== undefined ? String(tension) : undefined
+                tarifa: tarifa !== undefined ? String(tarifa) : null,
+                potContrat: potContrat !== undefined ? String(potContrat) : null,
+                direccion: direccion !== undefined ? String(direccion) : null,
+                tension: tension !== undefined ? String(tension) : null
             };
         });
 
         if (validatedData.length === 0) {
             throw new Error(`El archivo de tableros está vacío o no tiene el formato correcto.`);
         }
-        setCabinets(validatedData);
+        setLocalCabinets(validatedData);
     } catch(e) {
         const errorMessage = e instanceof Error ? e.message : `Ocurrió un error inesperado.`;
         setError(`Error al procesar el archivo de tableros: ${errorMessage}`);
-        setCabinets(null);
+        setLocalCabinets(null);
     } finally {
         setIsParsingCabinets(false);
     }
@@ -429,17 +434,22 @@ const App: React.FC = () => {
     }
   };
 
-  const handleGenerateRoutes = useCallback(async (targetZoneName: string = 'all', eventsOverride?: SystemEvent[], situationName?: string) => {
-    const eventsToProcess = eventsOverride || events;
-    if (!eventsToProcess) {
+  const handleGenerateRoutes = useCallback(async (targetZoneName: string = 'all') => {
+    if (!events) {
       setError("Por favor, cargue el listado de eventos para continuar.");
+      return;
+    }
+    if (!localCabinets) {
+      setError("Por favor, cargue el listado de servicios para continuar.");
       return;
     }
     
     setIsLoading(true);
+    setStatusMessage('Generando hojas de ruta...');
     setError(null);
     setZones([]);
     setSituationSummary([]);
+    setGenerationSummary(null);
 
     try {
         const depotMap = new Map<string, Depot>();
@@ -452,7 +462,24 @@ const App: React.FC = () => {
             normalizedZoneMap.set(normalizeString(municipio), zone);
         }
 
-        const eventsWithIds = eventsToProcess.map((event, index) => ({
+        const getEventZoneNameKey = (event: SystemEvent): string | undefined => {
+            if (event.zoneName) {
+                const normalizedEventZone = event.zoneName.toUpperCase().trim();
+                if (depotMap.has(normalizedEventZone)) {
+                    return normalizedEventZone;
+                }
+            }
+            if (event.municipio) {
+                const normalizedMunicipio = normalizeString(event.municipio.trim());
+                const mappedZone = normalizedZoneMap.get(normalizedMunicipio);
+                if (mappedZone && depotMap.has(mappedZone.toUpperCase().trim())) {
+                    return mappedZone.toUpperCase().trim();
+                }
+            }
+            return undefined;
+        };
+        
+        const eventsWithIds = events.map((event, index) => ({
           ...event,
           _internal_id: event._internal_id || `event-${Date.now()}-${index}`
         }));
@@ -460,7 +487,7 @@ const App: React.FC = () => {
         let remainingEvents: SystemEvent[] = [...eventsWithIds];
         const cabinetRoutes: Zone[] = [];
 
-        if (cabinets) {
+        if (localCabinets) {
             const eventsByAccount = new Map<string, SystemEvent[]>();
             eventsWithIds.forEach(event => {
                 if (event.nroCuenta) {
@@ -471,7 +498,7 @@ const App: React.FC = () => {
             });
             
             const cabinetMap = new Map<string, Cabinet>();
-            cabinets.forEach(cab => cabinetMap.set(cab.accountNumber.trim(), cab));
+            localCabinets.forEach(cab => cabinetMap.set(cab.accountNumber.trim(), cab));
 
             const cabinetRouteJobs: { priority: number; group: SystemEvent[]; accountNumber: string; }[] = [];
             
@@ -485,8 +512,6 @@ const App: React.FC = () => {
                 }
 
                 if (unreachableCount >= 5 && unreachableCount < CABINET_FAILURE_THRESHOLD) {
-                    // La combinación de misma cuenta y proximidad geográfica es un indicador más fuerte
-                    // de una falla de ramal que depender del campo de texto del municipio, que puede ser inconsistente.
                     if (isCohesiveGroup(unreachableEvents, 40)) {
                         cabinetRouteJobs.push({ priority: 1.5, group: unreachableEvents, accountNumber });
                         continue;
@@ -527,7 +552,7 @@ const App: React.FC = () => {
                     const routeName = nameTemplate + (totalParts > 1 ? ` - Parte ${partNumber}` : '');
                     
                     routes.push({
-                        id: '', // Will be replaced later with a unique ID
+                        id: '', 
                         name: routeName,
                         depot,
                         events: optimizedChunk,
@@ -543,25 +568,34 @@ const App: React.FC = () => {
 
             for (const job of cabinetRouteJobs) {
                 const firstEventInGroup = job.group[0];
+                const cabinetInfo = cabinetMap.get(job.accountNumber.trim());
                 let depotForCabinet: Depot | undefined;
-                let assignedZoneKey: string | undefined;
+                
+                let assignedZoneKey = getEventZoneNameKey(firstEventInGroup);
+                
+                // Fallback: Find nearest depot based on cabinet's coordinates if zone is still unknown
+                if (!assignedZoneKey && cabinetInfo) {
+                    let minDistance = Infinity;
+                    let nearestDepot: Depot | null = null;
+                    
+                    HARDCODED_DEPOTS.forEach(depot => {
+                        const distance = getDistance(cabinetInfo, depot);
+                        if (distance < minDistance) {
+                            minDistance = distance;
+                            nearestDepot = depot;
+                        }
+                    });
 
-                if (firstEventInGroup.zoneName) {
-                    const normalizedEventZone = firstEventInGroup.zoneName.toUpperCase().trim();
-                    if (depotMap.has(normalizedEventZone)) assignedZoneKey = normalizedEventZone;
-                }
-                if (!assignedZoneKey && firstEventInGroup.municipio) {
-                    const normalizedMunicipio = normalizeString(firstEventInGroup.municipio.trim());
-                    const mappedZone = normalizedZoneMap.get(normalizedMunicipio);
-                    if (mappedZone && depotMap.has(mappedZone.toUpperCase().trim())) {
-                        assignedZoneKey = mappedZone.toUpperCase().trim();
+                    if (nearestDepot) {
+                        assignedZoneKey = nearestDepot.zoneName.toUpperCase().trim();
                     }
                 }
+                
                 if (assignedZoneKey) depotForCabinet = depotMap.get(assignedZoneKey);
 
                 if (!depotForCabinet) {
                     console.warn(`No se pudo determinar un depósito para el evento del tablero de la cuenta ${job.accountNumber}.`);
-                    continue;
+                    continue; // Skip this job if no depot can be assigned
                 }
 
                 const belongsToTargetZone = targetZoneName === 'all' || depotForCabinet.zoneName === targetZoneName;
@@ -570,7 +604,6 @@ const App: React.FC = () => {
                 job.group.forEach(e => { if (e._internal_id) processedEventIds.add(e._internal_id); });
                 
                 if (job.priority === 1) { // Special handling for MAX PRIORITY
-                    const cabinetInfo = cabinetMap.get(job.accountNumber.trim());
                     if (!cabinetInfo) {
                         console.warn(`No se encontró información del tablero para la cuenta ${job.accountNumber}. Se omitirá la creación de la ruta de tablero.`);
                         continue;
@@ -580,8 +613,8 @@ const App: React.FC = () => {
                     const polyline = await fetchRoutePolyline(depotForCabinet, optimizedGroup);
 
                     cabinetRoutes.push({
-                        id: '', // Will be replaced later
-                        name: `PRIORIDAD MÁXIMA: Posible falla en Tablero (Cuenta: ${job.accountNumber})`,
+                        id: '',
+                        name: `Posible falla en Tablero (${depotForCabinet.zoneName}) - Cuenta: ${job.accountNumber}`,
                         depot: depotForCabinet,
                         events: optimizedGroup,
                         optimizedRoute: optimizedGroup,
@@ -602,11 +635,11 @@ const App: React.FC = () => {
                 } else { // Priorities 1.5, 2 and 3 keep splitting logic
                     let name = '';
                     if (job.priority === 1.5) {
-                        name = `POSIBLE FALLA DE RAMAL/FASE (Cuenta: ${job.accountNumber})`;
+                        name = `POSIBLE FALLA DE RAMAL/FASE (${depotForCabinet.zoneName}) - Cuenta: ${job.accountNumber}`;
                     } else if (job.priority === 2) {
-                        name = `PRIORIDAD ALTA: Evento de Voltaje (Cuenta: ${job.accountNumber})`;
+                        name = `Evento de Voltaje (${depotForCabinet.zoneName}) - Cuenta: ${job.accountNumber}`;
                     } else if (job.priority === 3) {
-                        name = `PRIORITARIO: Acumulación de fallas en un circuito (Cuenta: ${job.accountNumber})`;
+                        name = `Acumulación de fallas en un circuito (${depotForCabinet.zoneName}) - Cuenta: ${job.accountNumber}`;
                     }
 
                     const newRoutes = await createCabinetRoutesForGroup(job.group, job.priority, name, depotForCabinet);
@@ -619,172 +652,192 @@ const App: React.FC = () => {
             }
         }
         
-        const zonesData: { [key: string]: { depot: Depot; events: SystemEvent[] } } = {};
-        depotMap.forEach((depot, normalizedZoneName) => {
-            zonesData[normalizedZoneName] = { depot, events: [] };
+        const eventsForSummaryAndRegularRoutes = targetZoneName === 'all' 
+            ? remainingEvents
+            : remainingEvents.filter(event => {
+                const zoneKey = getEventZoneNameKey(event);
+                if (!zoneKey) return false;
+                const depot = depotMap.get(zoneKey);
+                return depot?.zoneName === targetZoneName;
+            });
+        
+        const situationSummaryCounts = new Map<string, number>();
+        const eventsBySituation: Record<string, SystemEvent[]> = {};
+        const regularEvents: SystemEvent[] = [];
+
+        eventsForSummaryAndRegularRoutes.forEach(event => {
+            const situation = event.situation?.trim();
+            if (situation && situation !== 'N/A' && situation !== '-') {
+                if (!eventsBySituation[situation]) {
+                    eventsBySituation[situation] = [];
+                }
+                eventsBySituation[situation].push(event);
+                situationSummaryCounts.set(situation, (situationSummaryCounts.get(situation) || 0) + 1);
+            } else {
+                regularEvents.push(event);
+            }
         });
 
-        remainingEvents.forEach((event) => {
-          let assignedZoneKey: string | undefined;
-          if (event.zoneName) {
-            const normalizedEventZone = event.zoneName.toUpperCase().trim();
-            if (depotMap.has(normalizedEventZone)) assignedZoneKey = normalizedEventZone;
-          }
-          if (!assignedZoneKey && event.municipio) {
-            const normalizedMunicipio = normalizeString(event.municipio.trim());
-            const mappedZone = normalizedZoneMap.get(normalizedMunicipio);
-            if (mappedZone && depotMap.has(mappedZone.toUpperCase().trim())) {
-                 assignedZoneKey = mappedZone.toUpperCase().trim();
+        const situationSummaryData = Array.from(situationSummaryCounts.entries())
+            .map(([situation, count]) => ({ situation, count }))
+            .sort((a, b) => b.count - a.count);
+        setSituationSummary(situationSummaryData);
+
+        const allNonCabinetRoutes: Zone[] = [];
+        
+        const processEventListIntoRoutes = async (eventList: SystemEvent[]): Promise<Partial<Zone>[]> => {
+            const routes: Partial<Zone>[] = [];
+            const zonesData: { [key: string]: { depot: Depot; eventsByMunicipio: { [key: string]: { displayName: string, events: SystemEvent[] } } } } = {};
+            
+            depotMap.forEach((depot, normalizedZoneName) => {
+                zonesData[normalizedZoneName] = { depot, eventsByMunicipio: {} };
+            });
+
+            eventList.forEach((event) => {
+                const assignedZoneKey = getEventZoneNameKey(event);
+                if (assignedZoneKey) {
+                    const municipioKey = normalizeString(event.municipio || 'Sin Municipio Asignado');
+                    if (!zonesData[assignedZoneKey].eventsByMunicipio[municipioKey]) {
+                        zonesData[assignedZoneKey].eventsByMunicipio[municipioKey] = {
+                            displayName: event.municipio || 'Sin Municipio Asignado',
+                            events: []
+                        };
+                    }
+                    zonesData[assignedZoneKey].eventsByMunicipio[municipioKey].events.push(event);
+                }
+            });
+
+            for (const zoneNameKey of Object.keys(zonesData)) {
+                const zoneInfo = zonesData[zoneNameKey];
+                const { depot, eventsByMunicipio } = zoneInfo;
+
+                for (const municipioKey of Object.keys(eventsByMunicipio)) {
+                    let unassignedEvents = [...eventsByMunicipio[municipioKey].events];
+                    const municipioDisplayName = eventsByMunicipio[municipioKey].displayName;
+
+                    if (unassignedEvents.length === 0) continue;
+                    
+                    while (unassignedEvents.length > 0) {
+                        const chunk: SystemEvent[] = [];
+                        const sortedByDate = unassignedEvents.sort((a, b) => parseReportedDate(a.reportedDate).getTime() - parseReportedDate(b.reportedDate).getTime());
+                        let currentEvent = sortedByDate[0];
+                        chunk.push(currentEvent);
+                        unassignedEvents = unassignedEvents.filter(f => f._internal_id !== currentEvent._internal_id);
+
+                        while (chunk.length < MAX_EVENTS_PER_ROUTE && unassignedEvents.length > 0) {
+                            let nearestIndex = -1;
+                            let minDistance = Infinity;
+                            unassignedEvents.forEach((event, index) => {
+                                const distance = getDistance(currentEvent, event);
+                                if (distance < minDistance) {
+                                    minDistance = distance;
+                                    nearestIndex = index;
+                                }
+                            });
+
+                            if (nearestIndex !== -1) {
+                                const nearestEvent = unassignedEvents.splice(nearestIndex, 1)[0];
+                                chunk.push(nearestEvent);
+                                currentEvent = nearestEvent;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        const optimizedChunk = await optimizeRouteLocally(depot, chunk);
+                        const polyline = await fetchRoutePolyline(depot, chunk);
+                        
+                        routes.push({
+                            name: `${depot.zoneName} - ${municipioDisplayName}`,
+                            depot: depot,
+                            events: optimizedChunk, 
+                            optimizedRoute: optimizedChunk, 
+                            routePolyline: polyline,
+                        });
+                    }
+                }
             }
-          }
-          if (assignedZoneKey) {
-            zonesData[assignedZoneKey].events.push(event);
-          } else {
-             console.warn(`Evento no asignado: El evento ${event.luminaireId} (Municipio: ${event.municipio || 'N/A'}) no pudo ser asignado a ninguna zona de depósito.`);
-          }
+            return routes;
+        };
+        
+        const regularRoutesPartials = await processEventListIntoRoutes(regularEvents);
+        allNonCabinetRoutes.push(...regularRoutesPartials.map(r => ({ ...r, isCabinetRoute: false, priority: 4, id: '' } as Zone)));
+
+        for (const situation in eventsBySituation) {
+            const situationRoutesPartials = await processEventListIntoRoutes(eventsBySituation[situation]);
+            allNonCabinetRoutes.push(...situationRoutesPartials.map(r => ({ ...r, isCabinetRoute: false, priority: 5, situation, id: '' } as Zone)));
+        }
+        
+        const allRoutes = [...cabinetRoutes, ...allNonCabinetRoutes].filter(r => {
+             const belongsToTargetZone = targetZoneName === 'all' || r.depot.zoneName === targetZoneName;
+             return belongsToTargetZone;
         });
         
-        const depotZoneNameMap = new Map<string, string>();
-        HARDCODED_DEPOTS.forEach(d => depotZoneNameMap.set(d.zoneName.toUpperCase().trim(), d.zoneName));
-
-        const zoneKeysToProcess = targetZoneName === 'all'
-            ? Object.keys(zonesData).filter(zoneName => zonesData[zoneName].events.length > 0)
-            : Object.keys(zonesData).filter(zoneKey => depotZoneNameMap.get(zoneKey) === targetZoneName && zonesData[zoneKey].events.length > 0);
-
-        if (zoneKeysToProcess.length === 0 && cabinetRoutes.length === 0) {
-          setError("No se encontraron eventos para procesar en las zonas definidas. Verifique que los municipios en su archivo coincidan con la configuración interna.");
+        if (allRoutes.length === 0) {
+          setError("No se encontraron eventos para procesar en la zona seleccionada. Verifique que los municipios en su archivo coincidan con la configuración interna.");
           setIsLoading(false);
           return;
         }
 
-        const regularRoutes: Zone[] = [];
+        const routesByZone = allRoutes.reduce((acc, route) => {
+            const zoneName = route.depot.zoneName;
+            if (!acc[zoneName]) {
+                acc[zoneName] = [];
+            }
+            acc[zoneName].push(route);
+            return acc;
+        }, {} as Record<string, Zone[]>);
+
+        const finalZones: Zone[] = [];
+        const summary = {
+            total: 0,
+            byZone: {} as Record<string, number>,
+            byType: { cabinet: 0, regular: 0 }
+        };
         
-        for (const zoneNameKey of zoneKeysToProcess) {
-            const zoneInfo = zonesData[zoneNameKey];
-            let unassignedEvents = [...zoneInfo.events];
+        const sortedZoneNames = Object.keys(routesByZone).sort((a, b) => a.localeCompare(b));
 
-            while (unassignedEvents.length > 0) {
-                const chunk: SystemEvent[] = [];
+        for (const zoneName of sortedZoneNames) {
+            const zoneRoutes = routesByZone[zoneName];
+            
+            zoneRoutes.sort((a, b) => {
+                const priorityA = a.priority ?? 99;
+                const priorityB = b.priority ?? 99;
+                if (priorityA !== priorityB) return priorityA - priorityB;
+                return a.name.localeCompare(b.name, 'es', { numeric: true, sensitivity: 'base' });
+            });
+
+            zoneRoutes.forEach((zone, index) => {
+                const baseName = zone.name;
+                const finalName = `Hoja de Ruta ${index + 1} - ${baseName}${zone.situation ? ` (${zone.situation})` : ''}`;
                 
-                const sortedByDate = unassignedEvents.sort((a, b) => parseReportedDate(a.reportedDate).getTime() - parseReportedDate(b.reportedDate).getTime());
-                let currentEvent = sortedByDate[0];
-                chunk.push(currentEvent);
-                unassignedEvents = unassignedEvents.filter(f => f._internal_id !== currentEvent._internal_id);
-
-                while (chunk.length < MAX_EVENTS_PER_ROUTE && unassignedEvents.length > 0) {
-                    let nearestIndex = -1;
-                    let minDistance = Infinity;
-
-                    unassignedEvents.forEach((event, index) => {
-                        const distance = getDistance(currentEvent, event);
-                        if (distance < minDistance) {
-                            minDistance = distance;
-                            nearestIndex = index;
-                        }
-                    });
-
-                    if (nearestIndex !== -1) {
-                        const nearestEvent = unassignedEvents.splice(nearestIndex, 1)[0];
-                        chunk.push(nearestEvent);
-                        currentEvent = nearestEvent;
-                    } else {
-                        break; 
-                    }
-                }
-
-                const optimizedChunk = await optimizeRouteLocally(zoneInfo.depot, chunk);
-                const polyline = await fetchRoutePolyline(zoneInfo.depot, optimizedChunk);
-                
-                const routeDescription = zoneInfo.depot.zoneName;
-                
-                regularRoutes.push({
-                    id: '', // Will be replaced later
-                    name: routeDescription,
-                    depot: zoneInfo.depot,
-                    events: optimizedChunk, 
-                    optimizedRoute: optimizedChunk, 
-                    routePolyline: polyline,
-                    isCabinetRoute: false,
-                    priority: 4,
+                finalZones.push({
+                    ...zone,
+                    id: `zone-${Date.now()}-${zoneName.replace(/\s+/g, '-')}-${index}`,
+                    name: finalName,
                 });
-            }
-        }
-        
-        const allRoutes = [...cabinetRoutes, ...regularRoutes];
-        
-        allRoutes.sort((a, b) => {
-            const priorityA = a.priority ?? 99;
-            const priorityB = b.priority ?? 99;
-            if (priorityA !== priorityB) {
-                return priorityA - priorityB;
-            }
-            return a.name.localeCompare(b.name, 'es', { numeric: true, sensitivity: 'base' });
-        });
-        
-        const finalZones = allRoutes.map((zone, index) => {
-            const baseName = `Hoja de Ruta ${index + 1} - ${zone.name}`;
-            const finalName = situationName ? `${baseName} (${situationName})` : baseName;
-            return {
-                ...zone,
-                id: `zone-${Date.now()}-${index}`,
-                name: finalName,
-            };
-        });
 
-        const summaryCounts = new Map<string, number>();
-        finalZones.forEach(zone => {
-            zone.events.forEach(event => {
-                const situation = event.situation?.trim();
-                if (situation && situation !== 'N/A' && situation !== '-') {
-                    summaryCounts.set(situation, (summaryCounts.get(situation) || 0) + 1);
+                summary.total++;
+                summary.byZone[zoneName] = (summary.byZone[zoneName] || 0) + 1;
+                if (zone.isCabinetRoute) {
+                    summary.byType.cabinet++;
+                } else {
+                    summary.byType.regular++;
                 }
             });
-        });
-
-        const summary = Array.from(summaryCounts.entries())
-            .map(([situation, count]) => ({ situation, count }))
-            .sort((a, b) => b.count - a.count);
-
-        setSituationSummary(summary);
-        setZones(finalZones);
-        setCurrentSituationFilter(situationName || null);
-        if (!situationName) {
-            setOriginalZones(finalZones);
         }
-
+        setGenerationSummary(summary);
+        setZones(finalZones);
+       
     } catch (err) {
       console.error(err);
       const errorMessage = err instanceof Error ? err.message : "Ocurrió un error desconocido al generar las rutas.";
       setError(errorMessage);
     } finally {
       setIsLoading(false);
+      setStatusMessage('');
     }
-  }, [events, cabinets]);
-
-  const handleGenerateRoutesForSituation = useCallback(async (situation: string) => {
-    if (!events) return; // Should not happen if summary is visible, but good practice
-    const filteredEvents = events.filter(e => e.situation === situation);
-    await handleGenerateRoutes(selectedZone, filteredEvents, situation);
-  }, [events, selectedZone, handleGenerateRoutes]);
-  
-  const handleRevertToOriginalRoutes = useCallback(() => {
-    setZones(originalZones);
-    setCurrentSituationFilter(null);
-
-    const summaryCounts = new Map<string, number>();
-    originalZones.forEach(zone => {
-        zone.events.forEach(event => {
-            const situation = event.situation?.trim();
-            if (situation && situation !== 'N/A' && situation !== '-') {
-                summaryCounts.set(situation, (summaryCounts.get(situation) || 0) + 1);
-            }
-        });
-    });
-    const summary = Array.from(summaryCounts.entries())
-        .map(([situation, count]) => ({ situation, count }))
-        .sort((a, b) => b.count - a.count);
-    setSituationSummary(summary);
-  }, [originalZones]);
+  }, [events, localCabinets]);
 
   const handleBulkDownload = async () => {
     if (zones.length === 0 || isBulkDownloading) return;
@@ -806,8 +859,7 @@ const App: React.FC = () => {
 
         const zipBlob = await zip.generateAsync({ type: 'blob', compression: "DEFLATE" });
         
-        const situationPart = currentSituationFilter ? `_${currentSituationFilter.replace(/\s+/g, '_')}` : '';
-        const zipFilename = `Hojas_de_Ruta${situationPart}_${dateStringForZip}.zip`;
+        const zipFilename = `Hojas_de_Ruta_${dateStringForZip}.zip`;
 
         const url = URL.createObjectURL(zipBlob);
         
@@ -827,7 +879,56 @@ const App: React.FC = () => {
     }
   };
 
-  const canGenerate = events !== null;
+  const handleSearch = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (searchResultTimeoutRef.current) {
+        clearTimeout(searchResultTimeoutRef.current);
+    }
+
+    if (!searchQuery.trim()) {
+        setSearchResult({ zoneId: null, status: 'idle' });
+        return;
+    }
+
+    const query = searchQuery.trim().toLowerCase();
+    let foundZoneId: string | null = null;
+
+    for (const zone of zones) {
+        const foundEvent = zone.events.find(event => 
+            String(event.luminaireId).toLowerCase() === query || 
+            String(event.olcId).toLowerCase() === query
+        );
+        if (foundEvent) {
+            foundZoneId = zone.id;
+            break;
+        }
+    }
+
+    if (foundZoneId) {
+        setSearchResult({ zoneId: foundZoneId, status: 'found' });
+        const element = document.getElementById(foundZoneId);
+        element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        
+        searchResultTimeoutRef.current = window.setTimeout(() => {
+            setSearchResult({ zoneId: null, status: 'idle' });
+        }, 4000);
+    } else {
+        setSearchResult({ zoneId: null, status: 'not-found' });
+         searchResultTimeoutRef.current = window.setTimeout(() => {
+            setSearchResult({ zoneId: null, status: 'idle' });
+        }, 4000);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+        if (searchResultTimeoutRef.current) {
+            clearTimeout(searchResultTimeoutRef.current);
+        }
+    };
+  }, []);
+
+  const canGenerate = events !== null && localCabinets !== null;
 
   return (
     <div className="min-h-screen bg-slate-100">
@@ -837,7 +938,7 @@ const App: React.FC = () => {
           <div>
             <div className="flex justify-between items-center">
                 <h2 className="text-xl font-bold text-slate-800">1. Cargar Archivos</h2>
-                {(events !== null || cabinets !== null) && (
+                {(events !== null || localCabinets !== null) && (
                     <button
                         onClick={handleReset}
                         className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors"
@@ -850,7 +951,7 @@ const App: React.FC = () => {
             </div>
             <div className="flex justify-between items-center mt-1">
                 <p className="text-slate-500">
-                    Cargue el listado de eventos del sistema. Opcionalmente, cargue los datos de tableros.
+                    Cargue el listado de eventos y el de servicios/tableros para generar las rutas.
                 </p>
                 <button
                     onClick={() => setShowFileInfo(!showFileInfo)}
@@ -884,7 +985,7 @@ const App: React.FC = () => {
                           </ul>
                       </div>
                        <div>
-                          <p className="font-bold">Archivo de Tableros (Opcional):</p>
+                          <p className="font-bold">Archivo de Tableros / Servicios (Requerido):</p>
                           <p>Debe ser <strong>.csv</strong> o <strong>.xlsx</strong>. Usado para identificar la ubicación de eventos masivos. Columnas requeridas:</p>
                           <ul className="list-disc pl-5 mt-1 space-y-0.5">
                               <li><strong>Nro. de Cuenta:</strong> <code>Num_Cuenta</code>, <code>Nro_CUENTA</code>, <code>nro_cuenta</code></li>
@@ -910,9 +1011,9 @@ const App: React.FC = () => {
                 </div>
                  <div className="w-full md:w-1/2">
                     <FileUploadButton 
-                        label="Cargar Datos de Tableros (Opcional)" 
+                        label="Cargar Listado de Servicios" 
                         onFileChange={handleCabinetsFileChange}
-                        isLoaded={cabinets !== null}
+                        isLoaded={localCabinets !== null}
                         isLoading={isParsingCabinets}
                         icon={<UploadIcon />}
                         id="cabinets-upload"
@@ -923,7 +1024,7 @@ const App: React.FC = () => {
 
           <div>
             <h2 className="text-xl font-bold text-slate-800">2. Generar Hojas de Ruta</h2>
-            <p className="text-slate-500 mt-1">Seleccione una zona o todas, y genere las hojas de ruta. Los eventos se agruparán y ordenarán por antigüedad.</p>
+            <p className="text-slate-500 mt-1">Seleccione una zona (o todas) y genere las hojas de ruta.</p>
             <div className="mt-4 flex flex-col md:flex-row gap-4 items-center">
                <select
                 id="zone-select"
@@ -944,7 +1045,7 @@ const App: React.FC = () => {
                 {isLoading ? (
                   <>
                     <CogIcon className="animate-spin h-5 w-5" />
-                    Generando...
+                    {statusMessage || 'Procesando...'}
                   </>
                 ) : (
                   <>
@@ -966,8 +1067,36 @@ const App: React.FC = () => {
 
         {!isLoading && zones.length > 0 && (
           <div className="max-w-7xl mx-auto mt-8">
+            {generationSummary && (
+                <div className="mb-6 p-6 bg-white rounded-xl shadow-lg border border-slate-200 animate-fade-in">
+                <h3 className="text-xl font-bold text-slate-800 mb-4">Resumen de Generación</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="p-4 bg-slate-50 rounded-lg text-center">
+                    <p className="text-sm font-semibold text-slate-500 uppercase">Total de Hojas de Ruta</p>
+                    <p className="text-4xl font-bold text-indigo-600 mt-1">{generationSummary.total}</p>
+                    </div>
+                    <div className="p-4 bg-slate-50 rounded-lg">
+                    <p className="text-sm font-semibold text-slate-500 uppercase text-center mb-2">Detalle por Tipo</p>
+                    <div className="space-y-1 text-center">
+                        <p className="text-sm"><span className="font-bold text-slate-700 text-base">{generationSummary.byType.cabinet}</span> Rutas de Tablero</p>
+                        <p className="text-sm"><span className="font-bold text-slate-700 text-base">{generationSummary.byType.regular}</span> Rutas Regulares</p>
+                    </div>
+                    </div>
+                    <div className="p-4 bg-slate-50 rounded-lg">
+                    <p className="text-sm font-semibold text-slate-500 uppercase text-center mb-2">Detalle por Zona</p>
+                    <ul className="space-y-1 text-center text-sm">
+                        {Object.entries(generationSummary.byZone).sort(([zoneA], [zoneB]) => zoneA.localeCompare(zoneB)).map(([zone, count]) => (
+                        <li key={zone}>
+                            <span className="font-semibold">{zone}:</span> <span className="font-bold text-slate-700">{count}</span>
+                        </li>
+                        ))}
+                    </ul>
+                    </div>
+                </div>
+                </div>
+            )}
+
              {(() => {
-                if (currentSituationFilter) return null; // Do not show this banner on filtered views
                 const cabinetRoutes = zones.filter(z => z.priority && z.priority < 4);
                 if (cabinetRoutes.length > 0) {
                   return (
@@ -980,59 +1109,63 @@ const App: React.FC = () => {
                     </div>
                   );
                 }
-                return (
-                  <div className="bg-green-100 border-l-4 border-green-500 text-green-800 p-4 rounded-md mb-6 flex items-center gap-3">
-                    <CheckCircleIcon className="h-6 w-6 text-green-600" />
-                    <div>
-                      <p className="font-bold">Hojas de ruta generadas con éxito</p>
-                      <p>Mostrando {zones.length} hoja(s) de ruta ordenada(s) por antigüedad.</p>
-                    </div>
-                  </div>
-                );
+                return null;
              })()}
 
-            {currentSituationFilter && (
-                <div className="mb-6 flex justify-start">
-                    <button
-                        onClick={handleRevertToOriginalRoutes}
-                        className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-indigo-700 bg-indigo-100 hover:bg-indigo-200 rounded-md transition-colors"
-                    >
-                        <ArrowUturnLeftIcon className="h-5 w-5" />
-                        Volver a todas las hojas de ruta
-                    </button>
-                </div>
-            )}
             
             {situationSummary.length > 0 && (
                 <SituationSummary 
                     summary={situationSummary} 
-                    onGenerateForSituation={handleGenerateRoutesForSituation}
                 />
             )}
 
-            <div className="flex justify-end mb-6">
-              <button
-                  onClick={handleBulkDownload}
-                  disabled={isBulkDownloading}
-                  className="flex items-center justify-center gap-2 px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
-              >
-                  {isBulkDownloading ? (
-                      <>
-                          <CogIcon className="animate-spin h-5 w-5" />
-                          Descargando...
-                      </>
-                  ) : (
-                      <>
-                          <ExportIcon className="h-5 w-5" />
-                          Descargar Todos los HTML
-                      </>
-                  )}
-              </button>
+            <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-6">
+              <form onSubmit={handleSearch} className="w-full md:w-auto md:flex-grow">
+                <div className="relative">
+                  <input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(e) => {
+                        setSearchQuery(e.target.value);
+                        if (searchResult.status !== 'idle') {
+                            setSearchResult({ zoneId: null, status: 'idle' });
+                        }
+                    }}
+                    placeholder="Buscar por ID de Luminaria u OLC..."
+                    className="block w-full pl-10 pr-4 py-2 bg-white border border-slate-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                  />
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <MagnifyingGlassIcon className="h-5 w-5 text-slate-400" />
+                  </div>
+                </div>
+                 {searchResult.status === 'not-found' && (
+                    <p className="mt-2 text-sm text-red-600 animate-fade-in">No se encontró la luminaria u OLC.</p>
+                 )}
+              </form>
+              <div className="w-full md:w-auto flex flex-col-reverse md:flex-row gap-4 items-center">
+                <button
+                    onClick={handleBulkDownload}
+                    disabled={isBulkDownloading}
+                    className="w-full md:w-auto flex-shrink-0 flex items-center justify-center gap-2 px-4 py-2 border border-slate-300 text-sm font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
+                >
+                    {isBulkDownloading ? (
+                        <>
+                            <CogIcon className="animate-spin h-5 w-5" />
+                            Descargando...
+                        </>
+                    ) : (
+                        <>
+                            <ExportIcon className="h-5 w-5" />
+                            Descargar Todos los HTML
+                        </>
+                    )}
+                </button>
+              </div>
             </div>
 
             <div className="space-y-8">
               {zones.map(zone => (
-                <ZoneOptimizer key={zone.id} zoneData={zone} />
+                <ZoneOptimizer key={zone.id} zoneData={zone} isHighlighted={searchResult.zoneId === zone.id} searchQuery={searchQuery} />
               ))}
             </div>
           </div>

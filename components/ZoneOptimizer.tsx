@@ -1,4 +1,5 @@
 
+
 import React, { useRef, useState } from 'react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -11,6 +12,8 @@ import { generateStandaloneHTML } from '../services/htmlGenerator';
 
 interface ZoneOptimizerProps {
   zoneData: Zone;
+  isHighlighted?: boolean;
+  searchQuery?: string;
 }
 
 const generateRouteFilename = (zoneData: Zone): string => {
@@ -25,7 +28,7 @@ const generateRouteFilename = (zoneData: Zone): string => {
     
     if (zoneData.cabinetData) {
         const accountNumber = zoneData.cabinetData.accountNumber;
-        return `HR_${routeNumber}_MAX_PRIORIDAD_Posible_falla_en_Tablero_Cuenta_${accountNumber}_${dateString}`;
+        return `HR_${routeNumber}_Posible_falla_en_Tablero_Cuenta_${accountNumber}_${dateString}`;
     }
 
     if (zoneData.name.includes('POSIBLE FALLA DE RAMAL/FASE')) {
@@ -242,12 +245,13 @@ const exportToPDF = async (
     doc.save(filename);
 };
 
-export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData }) => {
+export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData, isHighlighted = false, searchQuery = '' }) => {
   const route = zoneData.optimizedRoute || [];
   const [mapInstance, setMapInstance] = useState<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [shareStatus, setShareStatus] = useState<'idle' | 'generating' | 'success'>('idle');
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
 
   const handleExport = async () => {
     if (isExporting) return;
@@ -309,7 +313,10 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData }) => {
   }
 
   return (
-    <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+    <div 
+      id={zoneData.id}
+      className={`bg-white rounded-xl shadow-lg overflow-hidden transition-all duration-500 ${isHighlighted ? 'ring-4 ring-offset-2 ring-indigo-500' : ''}`}
+    >
       <div className="p-6 bg-slate-50 border-b border-slate-200">
         <h3 className={`text-xl font-bold ${titleClass}`}>{zoneData.name}</h3>
         <p className="text-sm text-slate-500 mt-1">
@@ -384,13 +391,30 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData }) => {
                   </thead>
                   <tbody className="bg-white divide-y divide-slate-200">
                       {route.length > 0 ? route.map((event, index) => {
-                          const rowClass = isHighPriority ? 'bg-amber-50 hover:bg-amber-100' : 'hover:bg-slate-50';
+                          const isSearchedRow = normalizedSearchQuery && (
+                            String(event.luminaireId).toLowerCase() === normalizedSearchQuery ||
+                            String(event.olcId).toLowerCase() === normalizedSearchQuery
+                          );
+
+                          let rowClass;
+                          if (isSearchedRow) {
+                              rowClass = 'bg-indigo-100 ring-2 ring-indigo-400 ring-inset';
+                          } else {
+                              rowClass = isHighPriority ? 'bg-amber-50 hover:bg-amber-100' : 'hover:bg-slate-50';
+                          }
+                          
                           return (
                             <tr key={event._internal_id || `event-${index}`} className={rowClass}>
                                 <td className="px-3 py-3 whitespace-nowrap text-sm font-medium text-slate-800 align-top">{index + 1}</td>
                                 <td className="px-3 py-3 text-sm font-bold text-black align-top">
-                                    {event.luminaireId || 'N/A'}
-                                    <div className="mt-1 text-sm font-bold text-black">{event.olcId || 'N/A'}</div>
+                                    <span className={String(event.luminaireId).toLowerCase() === normalizedSearchQuery ? 'bg-yellow-200 px-1 rounded' : ''}>
+                                        {event.luminaireId || 'N/A'}
+                                    </span>
+                                    <div className="mt-1 text-sm font-bold text-black">
+                                      <span className={String(event.olcId).toLowerCase() === normalizedSearchQuery ? 'bg-yellow-200 px-1 rounded' : ''}>
+                                          {event.olcId || 'N/A'}
+                                      </span>
+                                    </div>
                                 </td>
                                 <td className="px-3 py-3 text-sm text-slate-600 align-top">{event.cabinetId || 'N/A'}</td>
                                 <td className="px-3 py-3 text-sm text-slate-600 align-top">{`${event.power} W`}</td>

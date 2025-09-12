@@ -1,28 +1,29 @@
 
+
 export interface SystemEvent {
   luminaireId: string;
   olcId: string;
-  cabinetId?: string;
+  cabinetId?: string | null;
   power: number;
   category: string;
-  errorMessage?: string;
+  errorMessage?: string | null;
   lat: number;
   lon: number;
-  zoneName?: string;
-  municipio?: string;
-  reportedDate?: string;
-  situation?: string;
+  zoneName?: string | null;
+  municipio?: string | null;
+  reportedDate?: string | null;
+  situation?: string | null;
   _internal_id?: string;
   // Added for cabinet event feature
-  nroCuenta?: string;
+  nroCuenta?: string | null;
   isCabinetEvent?: boolean;
   affectedEventsCount?: number;
   affectedEvents?: SystemEvent[];
   // New fields for cabinet data
-  tarifa?: string;
-  potContrat?: string;
-  direccion?: string;
-  tension?: string;
+  tarifa?: string | null;
+  potContrat?: string | null;
+  direccion?: string | null;
+  tension?: string | null;
 }
 
 export interface Depot {
@@ -35,10 +36,10 @@ export interface CabinetSummary {
     accountNumber: string;
     lat: number;
     lon: number;
-    direccion?: string;
-    tension?: string;
-    tarifa?: string;
-    potContrat?: string;
+    direccion?: string | null;
+    tension?: string | null;
+    tarifa?: string | null;
+    potContrat?: string | null;
     affectedLuminaires: SystemEvent[];
 }
 
@@ -52,6 +53,7 @@ export interface Zone {
   isCabinetRoute?: boolean;
   priority?: number;
   cabinetData?: CabinetSummary;
+  situation?: string | null;
 }
 
 // Added for cabinet failure feature
@@ -60,8 +62,8 @@ export interface Cabinet {
     lat: number;
     lon: number;
     // New fields
-    tarifa?: string;
-    potContrat?: string;
-    direccion?: string;
-    tension?: string;
+    tarifa?: string | null;
+    potContrat?: string | null;
+    direccion?: string | null;
+    tension?: string | null;
 }

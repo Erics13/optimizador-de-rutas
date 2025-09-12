@@ -8,17 +8,19 @@ interface FileUploadButtonProps {
   isLoaded: boolean;
   isLoading: boolean;
   icon: React.ReactNode;
+  overrideLoadedText?: string;
 }
 
-export const FileUploadButton: React.FC<FileUploadButtonProps> = ({ id, label, onFileChange, isLoaded, isLoading, icon }) => {
-  const isDisabled = isLoading || isLoaded;
+export const FileUploadButton: React.FC<FileUploadButtonProps> = ({ id, label, onFileChange, isLoaded, isLoading, icon, overrideLoadedText }) => {
+  const isUpdatable = !!overrideLoadedText;
+  const isDisabled = isLoading || (isLoaded && !isUpdatable);
   
   return (
     <label
       htmlFor={id}
       className={`relative w-full flex items-center justify-center gap-3 px-4 py-3 border-2 border-dashed rounded-lg transition-colors duration-200 ${
         isLoaded 
-          ? 'border-green-400 bg-green-50 text-green-800 cursor-default' 
+          ? `border-green-400 bg-green-50 text-green-800 ${isUpdatable ? 'hover:bg-green-100 cursor-pointer' : 'cursor-default'}` 
           : isLoading
           ? 'border-slate-300 bg-slate-100 text-slate-500 cursor-wait'
           : 'border-slate-300 bg-slate-50 text-slate-600 hover:border-indigo-400 hover:text-indigo-600 cursor-pointer'
@@ -33,7 +35,7 @@ export const FileUploadButton: React.FC<FileUploadButtonProps> = ({ id, label, o
       )}
 
       <span className="font-semibold">
-        {isLoaded ? 'Archivo Cargado' : isLoading ? 'Procesando...' : label}
+        {isLoaded ? (overrideLoadedText || 'Archivo Cargado') : isLoading ? 'Procesando...' : label}
       </span>
       
       <input
