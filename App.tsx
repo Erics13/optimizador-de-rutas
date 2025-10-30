@@ -555,7 +555,7 @@ const App: React.FC = () => {
                         id: '', 
                         name: routeName,
                         depot,
-                        events: optimizedChunk,
+                        events: chunk,
                         optimizedRoute: optimizedChunk,
                         routePolyline: polyline,
                         isCabinetRoute: true,
@@ -616,7 +616,7 @@ const App: React.FC = () => {
                         id: '',
                         name: `Posible falla en Tablero (${depotForCabinet.zoneName}) - Cuenta: ${job.accountNumber}`,
                         depot: depotForCabinet,
-                        events: optimizedGroup,
+                        events: job.group,
                         optimizedRoute: optimizedGroup,
                         routePolyline: polyline,
                         isCabinetRoute: true,
@@ -745,12 +745,12 @@ const App: React.FC = () => {
                         }
 
                         const optimizedChunk = await optimizeRouteLocally(depot, chunk);
-                        const polyline = await fetchRoutePolyline(depot, chunk);
+                        const polyline = await fetchRoutePolyline(depot, optimizedChunk);
                         
                         routes.push({
                             name: `${depot.zoneName} - ${municipioDisplayName}`,
                             depot: depot,
-                            events: optimizedChunk, 
+                            events: chunk, 
                             optimizedRoute: optimizedChunk, 
                             routePolyline: polyline,
                         });

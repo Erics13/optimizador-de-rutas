@@ -1,5 +1,6 @@
 
-import React, { useEffect } from 'react';
+
+import React, { useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap, Polyline } from 'react-leaflet';
 import L, { LatLngBoundsExpression, LatLngTuple } from 'leaflet';
 import { Zone } from '../types';
@@ -149,15 +150,20 @@ const MapUpdater: React.FC<MapUpdaterProps> = ({ bounds }) => {
 
 interface RouteMapProps {
   zoneData: Zone;
-  onMapReady?: (map: L.Map) => void;
+  onMapReady?: (elements: { map: L.Map; polyline: L.Polyline | null }) => void;
 }
 
 export const RouteMap: React.FC<RouteMapProps> = ({ zoneData, onMapReady }) => {
     const route = zoneData.optimizedRoute;
+    const polylineRef = useRef<L.Polyline | null>(null);
 
     const MapInstanceProvider: React.FC = () => {
         const map = useMap();
-        useEffect(() => { if (map && onMapReady) onMapReady(map); }, [map, onMapReady]);
+        useEffect(() => {
+            if (map && onMapReady) {
+                onMapReady({ map, polyline: polylineRef.current });
+            }
+        }, [map, onMapReady]);
         return null;
     }
 
@@ -166,10 +172,15 @@ export const RouteMap: React.FC<RouteMapProps> = ({ zoneData, onMapReady }) => {
     }
     
     const depotPosition: LatLngTuple = [zoneData.depot.lat, zoneData.depot.lon];
-    const allPointsForBounds: LatLngTuple[] = [depotPosition];
-    route.forEach(event => allPointsForBounds.push([event.lat, event.lon]));
+    
+    // Calculate bounds based only on the events to center the view on the work area.
+    const allPointsForBounds: LatLngTuple[] = route.map(event => [event.lat, event.lon]);
     if (zoneData.cabinetData) {
         allPointsForBounds.push([zoneData.cabinetData.lat, zoneData.cabinetData.lon]);
+    }
+    // If there are no points, fall back to the depot to prevent an error.
+    if (allPointsForBounds.length === 0) {
+        allPointsForBounds.push(depotPosition);
     }
     
     const centerPosition: LatLngTuple = route.length > 0 ? [route[0].lat, route[0].lon] : depotPosition;
@@ -184,7 +195,7 @@ export const RouteMap: React.FC<RouteMapProps> = ({ zoneData, onMapReady }) => {
             />
 
             {zoneData.routePolyline && zoneData.routePolyline.length > 0 && (
-                <Polyline positions={zoneData.routePolyline} pathOptions={{ color: '#3b82f6', weight: 5, opacity: 0.8 }} />
+                <Polyline ref={polylineRef} positions={zoneData.routePolyline} pathOptions={{ color: '#3b82f6', weight: 5, opacity: 0.8 }} />
             )}
 
             <Marker position={depotPosition} icon={createHomeIcon()} zIndexOffset={1000}>

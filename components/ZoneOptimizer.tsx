@@ -5,10 +5,96 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import L from 'leaflet';
 import html2canvas from 'html2canvas';
-import type { Zone } from '../types';
+import type { Zone, SystemEvent } from '../types';
 import { MapIcon, TableIcon, ExportIcon, ShareIcon, CheckCircleIcon, CogIcon } from './icons';
 import { RouteMap } from './RouteMap';
 import { generateStandaloneHTML } from '../services/htmlGenerator';
+
+const normalizeForMatch = (str: string): string => {
+    if (!str) return '';
+    return str
+        .trim()
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+};
+
+const getTroubleshootingInfo = (event: { category: string, errorMessage?: string | null }): { action: string, solution: string } => {
+    const category = normalizeForMatch(event.category);
+    const message = normalizeForMatch(event.errorMessage || '');
+
+    if (category === 'unreachable') {
+        if (message.includes('el olc no informa los registros por hora') || message.includes('el olc no esta accesible')) {
+            return {
+                action: 'Revisar código de OLC, revisar energía, que no sea un problema electrico, llave térmica, conectores, probar luminaria con puente, etc. Aplicar reseteo de OLC.',
+                solution: 'Corregir código de OLC en Interact. Reparar posible problema eléctrico.'
+            };
+        }
+    }
+    
+    if (category === 'broken') {
+        if (message.includes('corte de luz parcial')) {
+            return {
+                action: 'Medir consumo de luminaria, posible placa de led rota o algunos led quemados. Revisar posible vandalismo.',
+                solution: 'Posible cambio de Luminaria.'
+            };
+        }
+        if (message.includes('posible falla en el driver')) {
+            return {
+                action: 'Medir consumo de luminaria en sitio, comparar con el consumo medido en Interact (RTP).',
+                solution: 'Posible cambio de Luminaria.'
+            };
+        }
+        if (message.includes('la corriente medida es menor que lo esperado') || message.includes('la corriente medida para la combinacion de driver y lampara es mayor')) {
+            return {
+                action: 'Medir consumo de luminaria en sitio, comparar con el consumo medido en Interact (RTP).',
+                solution: 'Posible cambio de Luminaria.'
+            };
+        }
+        if (message.includes('el chip del gps en el nodo esta roto')) {
+            return {
+                action: 'Cambio de OLC.',
+                solution: 'Cambio de OLC.'
+            };
+        }
+        if (message.includes('el componente de medicion de energia esta roto')) {
+            return {
+                action: 'Cambio de OLC.',
+                solution: 'Cambio de OLC.'
+            };
+        }
+    }
+
+    if (category === 'configuration error') {
+        if (message.includes('error de coincidencia del id de segmento')) {
+            return {
+                action: 'La OLC instalada no se puede comunicar con el gabinete porque ya esta vinculada con otro gabinete. Cambio de OLC.',
+                solution: 'Cambio de OLC.'
+            };
+        }
+    }
+    
+    if (category === 'hardware failure') {
+        if (message.includes('posible falla del rele en el olc')) {
+            return {
+                action: 'El relé de la OLC.',
+                solution: 'Cambio de OLC.'
+            };
+        }
+    }
+    
+    if (category === 'unspecific warning') {
+        if (message.includes('el voltaje de la red electrica de entrada detectado del sistema es muy bajo o muy alto')) {
+            return {
+                action: 'Medir voltaje en llave térmica individual de la luminaria, comparar con el consumo medido en Interact (RTP). Posible falla en térmica o conectores.',
+                solution: 'Cambio de llave térmica o conectores.'
+            };
+        }
+    }
+
+    return { action: '', solution: '' };
+};
+
 
 interface ZoneOptimizerProps {
   zoneData: Zone;
@@ -127,17 +213,27 @@ const captureMapImage = (
 };
 
 const exportToPDF = async (
-  zoneData: Zone, 
-  mapInstance: L.Map | null,
-  mapElement: HTMLElement | null
+  zoneData: Zone,
+  mapElements: { map: L.Map | null, polyline: L.Polyline | null },
+  mapElement: HTMLElement | null,
+  { includeMap = true }: { includeMap?: boolean } = {}
 ) => {
     const doc = new jsPDF({ orientation: 'landscape' });
     const title = zoneData.name;
-    const filename = `${generateRouteFilename(zoneData)}.pdf`;
+    const baseFilename = generateRouteFilename(zoneData);
+    const filename = includeMap ? `${baseFilename}.pdf` : `${baseFilename}_Tabla.pdf`;
+
+    const today = new Date();
+    const day = String(today.getDate()).padStart(2, '0');
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const year = today.getFullYear();
+    const dateString = `${day}/${month}/${year}`;
+
+    const titleWithDate = `${title} ${dateString}`;
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(16);
-    doc.text(title, 14, 22);
+    doc.text(titleWithDate, 14, 22);
     
     if (zoneData.priority === 1 && zoneData.cabinetData) {
         const cabinet = zoneData.cabinetData;
@@ -170,10 +266,11 @@ const exportToPDF = async (
         const route = zoneData.optimizedRoute;
         if (!route || route.length === 0) return;
 
-        const tableColumn = ["#", "ID Luminaria / OLC", "ID Gabinete", "Potencia", "Fecha Reporte", "Categoría", "Situación", "Mensaje de Error", "Actuación / Observaciones"];
+        const tableColumn = ["#", "ID Luminaria / OLC", "ID Gabinete", "Potencia", "Fecha Reporte", "Categoría", "Situación", "Mensaje de Error", "Acción", "Posible Solución", "Actuación / Observaciones"];
         const tableRows: (string|number)[][] = [];
 
         route.forEach((event, index) => {
+            const { action, solution } = getTroubleshootingInfo(event);
             tableRows.push([
                 index + 1,
                 `${event.luminaireId}\n${event.olcId || 'N/A'}`,
@@ -183,6 +280,8 @@ const exportToPDF = async (
                 translateCategory(event.category) || 'N/A',
                 event.situation || 'N/A',
                 event.errorMessage || 'N/A',
+                action,
+                solution,
                 ''
             ]);
         });
@@ -195,8 +294,20 @@ const exportToPDF = async (
             startY: 30,
             theme: 'grid',
             headStyles: { fillColor: headFillColor, textColor: [255, 255, 255], fontStyle: 'bold' },
-            styles: { font: 'helvetica', cellPadding: 2.5, fontSize: 8, valign: 'middle' },
-            columnStyles: { 0: { cellWidth: 8 }, 1: { cellWidth: 45 }, 2: { cellWidth: 20 }, 3: { cellWidth: 15 }, 4: { cellWidth: 20 }, 5: { cellWidth: 25 }, 6: { cellWidth: 25 }, 7: { cellWidth: 35 }, 8: { cellWidth: 'auto' } },
+            styles: { font: 'helvetica', cellPadding: 2, fontSize: 8, valign: 'middle' },
+            columnStyles: {
+                0: { cellWidth: 10 },
+                1: { cellWidth: 40 },
+                2: { cellWidth: 20 },
+                3: { cellWidth: 18 },
+                4: { cellWidth: 20 },
+                5: { cellWidth: 20 },
+                6: { cellWidth: 18 },
+                7: { cellWidth: 32 },
+                8: { cellWidth: 32 },
+                9: { cellWidth: 32 },
+                10: { cellWidth: 28 }
+            },
             didParseCell: (data) => { if (data.section === 'body' && data.column.index === 1) { data.cell.styles.fontStyle = 'bold'; } },
             didDrawPage: (data) => {
                 const str = `Página ${data.pageNumber}`;
@@ -208,38 +319,49 @@ const exportToPDF = async (
         });
     }
     
-    const mapImage = mapInstance && mapElement ? await captureMapImage(mapInstance, mapElement, zoneData) : null;
-    if (mapImage) {
-        doc.addPage('landscape');
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(16);
-        doc.text("Mapa de la Ruta", 14, 22);
-
-        const pageHeight = doc.internal.pageSize.getHeight();
-        const pageWidth = doc.internal.pageSize.getWidth();
-        const margin = 14;
-        const availableWidth = pageWidth - (margin * 2);
-        const availableHeight = pageHeight - 40;
-
-        const imgProps = doc.getImageProperties(mapImage);
-        const ratio = imgProps.width / imgProps.height;
-        
-        let pdfImgWidth = availableWidth;
-        let pdfImgHeight = pdfImgWidth / ratio;
-
-        if (pdfImgHeight > availableHeight) {
-            pdfImgHeight = availableHeight;
-            pdfImgWidth = pdfImgHeight * ratio;
+    if (includeMap) {
+        if (mapElements.map && mapElements.polyline) {
+            mapElements.map.removeLayer(mapElements.polyline);
         }
 
-        const x = (pageWidth - pdfImgWidth) / 2;
-        const y = 30;
-        doc.addImage(mapImage, 'PNG', x, y, pdfImgWidth, pdfImgHeight);
+        const mapImage = mapElements.map && mapElement ? await captureMapImage(mapElements.map, mapElement, zoneData) : null;
         
-        const str = `Página ${doc.getNumberOfPages()}`;
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(8);
-        doc.text(str, margin, pageHeight - 10);
+        if (mapElements.map && mapElements.polyline) {
+            mapElements.map.addLayer(mapElements.polyline);
+        }
+
+        if (mapImage) {
+            doc.addPage('landscape');
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(16);
+            doc.text("Mapa de la Ruta", 14, 22);
+
+            const pageHeight = doc.internal.pageSize.getHeight();
+            const pageWidth = doc.internal.pageSize.getWidth();
+            const margin = 14;
+            const availableWidth = pageWidth - (margin * 2);
+            const availableHeight = pageHeight - 40;
+
+            const imgProps = doc.getImageProperties(mapImage);
+            const ratio = imgProps.width / imgProps.height;
+            
+            let pdfImgWidth = availableWidth;
+            let pdfImgHeight = pdfImgWidth / ratio;
+
+            if (pdfImgHeight > availableHeight) {
+                pdfImgHeight = availableHeight;
+                pdfImgWidth = pdfImgHeight * ratio;
+            }
+
+            const x = (pageWidth - pdfImgWidth) / 2;
+            const y = 30;
+            doc.addImage(mapImage, 'PNG', x, y, pdfImgWidth, pdfImgHeight);
+            
+            const str = `Página ${doc.getNumberOfPages()}`;
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(8);
+            doc.text(str, margin, pageHeight - 10);
+        }
     }
 
     doc.save(filename);
@@ -247,28 +369,46 @@ const exportToPDF = async (
 
 export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData, isHighlighted = false, searchQuery = '' }) => {
   const route = zoneData.optimizedRoute || [];
-  const [mapInstance, setMapInstance] = useState<L.Map | null>(null);
+  const [mapElements, setMapElements] = useState<{ map: L.Map | null; polyline: L.Polyline | null }>({ map: null, polyline: null });
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const [isExporting, setIsExporting] = useState(false);
-  const [shareStatus, setShareStatus] = useState<'idle' | 'generating' | 'success'>('idle');
+  const [isExportingTable, setIsExportingTable] = useState(false);
+  const [htmlStatus, setHtmlStatus] = useState<'idle' | 'generating' | 'success'>('idle');
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  
+  const handleMapReady = (elements: { map: L.Map; polyline: L.Polyline | null }) => {
+    setMapElements(elements);
+  };
 
-  const handleExport = async () => {
+  const handleExportFullPDF = async () => {
     if (isExporting) return;
     setIsExporting(true);
     try {
-      await exportToPDF(zoneData, mapInstance, mapContainerRef.current);
+      await exportToPDF(zoneData, mapElements, mapContainerRef.current, { includeMap: true });
     } catch(err) {
-      console.error("Error al exportar a PDF:", err);
-      alert("Ocurrió un error al exportar el PDF.");
+      console.error("Error al exportar a PDF completo:", err);
+      alert("Ocurrió un error al exportar el PDF completo.");
     } finally {
       setIsExporting(false);
     }
   };
+  
+  const handleExportTablePDF = async () => {
+      if (isExportingTable) return;
+      setIsExportingTable(true);
+      try {
+          await exportToPDF(zoneData, { map: null, polyline: null }, null, { includeMap: false });
+      } catch (err) {
+          console.error("Error al exportar la tabla a PDF:", err);
+          alert("Ocurrió un error al exportar la tabla a PDF.");
+      } finally {
+          setIsExportingTable(false);
+      }
+  };
 
-  const handleShare = async () => {
-    if (shareStatus === 'generating') return;
-    setShareStatus('generating');
+  const handleGenerateHTML = async () => {
+    if (htmlStatus === 'generating') return;
+    setHtmlStatus('generating');
 
     try {
       const htmlContent = generateStandaloneHTML(zoneData);
@@ -285,13 +425,13 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData, isHighli
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      setShareStatus('success');
-      setTimeout(() => setShareStatus('idle'), 3000);
+      setHtmlStatus('success');
+      setTimeout(() => setHtmlStatus('idle'), 3000);
 
     } catch (error) {
         console.error("Error al generar el archivo HTML:", error);
         alert("Ocurrió un error al generar el archivo para compartir.");
-        setShareStatus('idle');
+        setHtmlStatus('idle');
     }
   };
   
@@ -331,29 +471,38 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData, isHighli
                   <TableIcon className="h-5 w-5" />
                   {isMaxPriority ? 'Resumen del Tablero Afectado' : 'Hoja de Ruta'}
               </h4>
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3">
                   <button
-                      onClick={handleShare}
-                      disabled={shareStatus === 'generating'}
+                      onClick={handleGenerateHTML}
+                      disabled={htmlStatus === 'generating'}
                       className={`flex items-center gap-1.5 text-xs font-semibold disabled:cursor-not-allowed transition-all duration-200 ${
-                        shareStatus === 'success' 
+                        htmlStatus === 'success' 
                         ? 'text-green-600'
                         : 'text-slate-600 hover:text-indigo-600 disabled:text-slate-400'
                       }`}
-                      title={shareStatus === 'success' ? "¡Archivo HTML generado!" : "Generar un archivo HTML para compartir"}
+                      title={htmlStatus === 'success' ? "¡Archivo HTML generado!" : "Generar un archivo HTML autónomo"}
                   >
-                      {shareStatus === 'idle' && <><ShareIcon className="h-4 w-4" />Compartir</>}
-                      {shareStatus === 'generating' && <><CogIcon className="h-4 w-4 animate-spin" />Generando...</>}
-                      {shareStatus === 'success' && <><CheckCircleIcon className="h-4 w-4" />¡Archivo Generado!</>}
+                      {htmlStatus === 'idle' && <><ShareIcon className="h-4 w-4" />Generar HTML</>}
+                      {htmlStatus === 'generating' && <><CogIcon className="h-4 w-4 animate-spin" />Generando HTML...</>}
+                      {htmlStatus === 'success' && <><CheckCircleIcon className="h-4 w-4" />¡HTML Generado!</>}
                   </button>
                   <button
-                      onClick={handleExport}
+                      onClick={handleExportTablePDF}
+                      disabled={isExportingTable}
+                      className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-indigo-600 disabled:text-slate-400 disabled:cursor-not-allowed transition-colors"
+                      title="Exportar solo la tabla a PDF"
+                  >
+                      <TableIcon className={`h-4 w-4 ${isExportingTable ? 'animate-pulse' : ''}`} />
+                      {isExportingTable ? 'Exportando...' : 'Exportar Tabla (PDF)'}
+                  </button>
+                  <button
+                      onClick={handleExportFullPDF}
                       disabled={isExporting}
                       className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-indigo-600 disabled:text-slate-400 disabled:cursor-not-allowed transition-colors"
-                      title="Exportar hoja de ruta a PDF"
+                      title="Exportar hoja de ruta completa (con mapa) a PDF"
                   >
                       <ExportIcon className={`h-4 w-4 ${isExporting ? 'animate-pulse' : ''}`} />
-                      {isExporting ? 'Exportando...' : 'Exportar a PDF'}
+                      {isExporting ? 'Exportando...' : 'Exportar PDF Completo'}
                   </button>
               </div>
           </div>
@@ -376,21 +525,24 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData, isHighli
                      </tbody>
                  </table>
              ) : (
-                <table className="min-w-full divide-y divide-slate-200 table-fixed">
+                <table className="min-w-full divide-y divide-slate-200">
                   <thead className={theadClass}>
                       <tr>
-                        <th scope="col" className={`w-12 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>#</th>
-                        <th scope="col" className={`w-44 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>ID Luminaria / OLC</th>
-                        <th scope="col" className={`w-32 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>ID Gabinete</th>
-                        <th scope="col" className={`w-24 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Potencia</th>
-                        <th scope="col" className={`w-32 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Fecha Reporte</th>
-                        <th scope="col" className={`w-32 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Categoría</th>
-                        <th scope="col" className={`w-32 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Situación</th>
+                        <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>#</th>
+                        <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>ID Luminaria / OLC</th>
+                        <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>ID Gabinete</th>
+                        <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Potencia</th>
+                        <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Fecha Reporte</th>
+                        <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Categoría</th>
+                        <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Situación</th>
                         <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Mensaje de Error</th>
+                        <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Acción</th>
+                        <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Posible Solución</th>
                       </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-slate-200">
                       {route.length > 0 ? route.map((event, index) => {
+                          const { action, solution } = getTroubleshootingInfo(event);
                           const isSearchedRow = normalizedSearchQuery && (
                             String(event.luminaireId).toLowerCase() === normalizedSearchQuery ||
                             String(event.olcId).toLowerCase() === normalizedSearchQuery
@@ -435,10 +587,12 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData, isHighli
                                 <td className="px-3 py-3 text-sm text-slate-600 align-top">
                                 <div className={`px-2 py-1 text-xs rounded-md ${event.errorMessage ? 'bg-red-100 text-red-800' : 'text-slate-500'}`}>{event.errorMessage || 'N/A'}</div>
                                 </td>
+                                <td className="px-3 py-3 text-sm text-slate-600 align-top">{action}</td>
+                                <td className="px-3 py-3 text-sm text-slate-600 align-top">{solution}</td>
                             </tr>
                           )
                       }) : (
-                      <tr><td colSpan={8} className="text-center py-4 text-sm text-slate-500">No hay datos de ruta para mostrar.</td></tr>
+                      <tr><td colSpan={10} className="text-center py-4 text-sm text-slate-500">No hay datos de ruta para mostrar.</td></tr>
                       )}
                   </tbody>
                 </table>
@@ -453,7 +607,7 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData, isHighli
               </h4>
           </div>
           <div ref={mapContainerRef} className="h-[600px] bg-slate-200 rounded-lg overflow-hidden border border-slate-200">
-            <RouteMap zoneData={zoneData} onMapReady={setMapInstance} />
+            <RouteMap zoneData={zoneData} onMapReady={handleMapReady} />
           </div>
         </div>
       </div>

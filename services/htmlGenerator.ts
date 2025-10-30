@@ -1,5 +1,90 @@
 import type { Zone } from '../types';
 
+const normalizeForMatch = (str: string): string => {
+    if (!str) return '';
+    return str
+        .trim()
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+};
+
+const getTroubleshootingInfo = (event: { category: string, errorMessage?: string | null }): { action: string, solution: string } => {
+    const category = normalizeForMatch(event.category);
+    const message = normalizeForMatch(event.errorMessage || '');
+
+    if (category === 'unreachable') {
+        if (message.includes('el olc no informa los registros por hora') || message.includes('el olc no esta accesible')) {
+            return {
+                action: 'Revisar código de OLC, revisar energía, que no sea un problema electrico, llave térmica, conectores, probar luminaria con puente, etc. Aplicar reseteo de OLC.',
+                solution: 'Corregir código de OLC en Interact. Reparar posible problema eléctrico.'
+            };
+        }
+    }
+    
+    if (category === 'broken') {
+        if (message.includes('corte de luz parcial')) {
+            return {
+                action: 'Medir consumo de luminaria, posible placa de led rota o algunos led quemados. Revisar posible vandalismo.',
+                solution: 'Posible cambio de Luminaria.'
+            };
+        }
+        if (message.includes('posible falla en el driver')) {
+            return {
+                action: 'Medir consumo de luminaria en sitio, comparar con el consumo medido en Interact (RTP).',
+                solution: 'Posible cambio de Luminaria.'
+            };
+        }
+        if (message.includes('la corriente medida es menor que lo esperado') || message.includes('la corriente medida para la combinacion de driver y lampara es mayor')) {
+            return {
+                action: 'Medir consumo de luminaria en sitio, comparar con el consumo medido en Interact (RTP).',
+                solution: 'Posible cambio de Luminaria.'
+            };
+        }
+        if (message.includes('el chip del gps en el nodo esta roto')) {
+            return {
+                action: 'Cambio de OLC.',
+                solution: 'Cambio de OLC.'
+            };
+        }
+        if (message.includes('el componente de medicion de energia esta roto')) {
+            return {
+                action: 'Cambio de OLC.',
+                solution: 'Cambio de OLC.'
+            };
+        }
+    }
+
+    if (category === 'configuration error') {
+        if (message.includes('error de coincidencia del id de segmento')) {
+            return {
+                action: 'La OLC instalada no se puede comunicar con el gabinete porque ya esta vinculada con otro gabinete. Cambio de OLC.',
+                solution: 'Cambio de OLC.'
+            };
+        }
+    }
+    
+    if (category === 'hardware failure') {
+        if (message.includes('posible falla del rele en el olc')) {
+            return {
+                action: 'El relé de la OLC.',
+                solution: 'Cambio de OLC.'
+            };
+        }
+    }
+    
+    if (category === 'unspecific warning') {
+        if (message.includes('el voltaje de la red electrica de entrada detectado del sistema es muy bajo o muy alto')) {
+            return {
+                action: 'Medir voltaje en llave térmica individual de la luminaria, comparar con el consumo medido en Interact (RTP). Posible falla en térmica o conectores.',
+                solution: 'Cambio de llave térmica o conectores.'
+            };
+        }
+    }
+
+    return { action: '', solution: '' };
+};
+
 const translateCategory = (category: string): string => {
     if (!category) return 'N/A';
     const lowerCategory = category.toLowerCase().trim();
@@ -116,18 +201,21 @@ export const generateStandaloneHTML = (zoneData: Zone): string => {
         
         tableHeadersHTML = `
             <tr>
-                <th scope="col" class="w-12 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">#</th>
-                <th scope="col" class="w-44 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">ID Luminaria / OLC</th>
-                <th scope="col" class="w-32 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">ID Gabinete</th>
-                <th scope="col" class="w-24 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Potencia</th>
-                <th scope="col" class="w-32 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Fecha Reporte</th>
-                <th scope="col" class="w-32 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Categoría</th>
-                <th scope="col" class="w-32 px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Situación</th>
+                <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">#</th>
+                <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">ID Luminaria / OLC</th>
+                <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">ID Gabinete</th>
+                <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Potencia</th>
+                <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Fecha Reporte</th>
+                <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Categoría</th>
+                <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Situación</th>
                 <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Mensaje de Error</th>
-                <th scope="col" class="w-24 px-3 py-3 text-center text-xs font-medium ${headerTextClass} uppercase tracking-wider">Compartir</th>
+                <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Acción</th>
+                <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Posible Solución</th>
+                <th scope="col" class="px-3 py-3 text-center text-xs font-medium ${headerTextClass} uppercase tracking-wider">Compartir</th>
             </tr>`;
 
         tableBodyHTML = route.map((event, index) => {
+            const { action, solution } = getTroubleshootingInfo(event);
             const gmapsUrl = `https://www.google.com/maps?q=${event.lat},${event.lon}`;
             const message = `Ubicación: ${gmapsUrl}\n\nLuminaria: ${event.luminaireId || 'N/A'}\nOLC: ${event.olcId || 'N/A'}`;
             const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(message)}`;
@@ -143,6 +231,8 @@ export const generateStandaloneHTML = (zoneData: Zone): string => {
                 <td class="px-3 py-3 text-sm text-slate-600 align-top">${translateCategory(event.category)}</td>
                 <td class="px-3 py-3 text-sm text-slate-600 align-top">${formatSituation(event.situation)}</td>
                 <td class="px-3 py-3 text-sm text-slate-600 align-top">${event.errorMessage || 'N/A'}</td>
+                <td class="px-3 py-3 text-sm text-slate-600 align-top">${action}</td>
+                <td class="px-3 py-3 text-sm text-slate-600 align-top">${solution}</td>
                 <td class="px-3 py-3 text-sm align-top text-center action-cell">
                     <a href="${whatsappUrl}" target="_blank" onclick="event.stopPropagation()" title="Compartir en WhatsApp" class="inline-block p-1.5 bg-green-100 text-green-700 rounded-full hover:bg-green-200 transition-colors">
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.894 11.892-1.99 0-3.903-.52-5.586-1.45L.057 24zm6.597-3.807c1.676.995 3.276 1.591 5.392 1.592 5.448 0 9.886-4.434 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 4.315 1.731 6.069l.161.287-1.175 4.284 4.36-1.162.269.159z"/></svg>
