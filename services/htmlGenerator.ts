@@ -1,3 +1,5 @@
+
+
 import type { Zone } from '../types';
 
 const normalizeForMatch = (str: string): string => {
@@ -209,6 +211,7 @@ export const generateStandaloneHTML = (zoneData: Zone): string => {
                 <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Categoría</th>
                 <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Situación</th>
                 <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Mensaje de Error</th>
+                <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Detalles Técnicos</th>
                 <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Acción</th>
                 <th scope="col" class="px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider">Posible Solución</th>
                 <th scope="col" class="px-3 py-3 text-center text-xs font-medium ${headerTextClass} uppercase tracking-wider">Compartir</th>
@@ -221,6 +224,21 @@ export const generateStandaloneHTML = (zoneData: Zone): string => {
             const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(message)}`;
             const rowClass = isHighPriority ? 'cabinet-row' : 'regular-row';
             
+            const eventMessage = normalizeForMatch(event.errorMessage || '');
+            let detailsHTML = '';
+            const isCurrentError = eventMessage.includes('la corriente medida es menor que lo esperado') || eventMessage.includes('la corriente medida para la combinacion de driver y lampara es mayor') || eventMessage.includes('corte de luz parcial') || eventMessage.includes('posible falla en el driver');
+            const isVoltageError = eventMessage.includes('el voltaje de la red electrica de entrada detectado del sistema es muy bajo o muy alto');
+
+            if (isCurrentError) {
+                if (event.measuredPower) detailsHTML += `<div><strong>Pot. Medida:</strong> ${event.measuredPower}</div>`;
+                if (event.voltage) detailsHTML += `<div><strong>Voltaje:</strong> ${event.voltage}</div>`;
+            } else if (isVoltageError) {
+                if (event.voltage) detailsHTML += `<div><strong>Voltaje:</strong> ${event.voltage}</div>`;
+            }
+            if (!detailsHTML) {
+                detailsHTML = `<span class="text-slate-400">-</span>`;
+            }
+
             return `
             <tr class="${rowClass}" onclick="window.open('${gmapsUrl}', '_blank')" title="Click para abrir en Google Maps">
                 <td class="px-3 py-3 whitespace-nowrap text-sm font-medium text-slate-800 align-top">${index + 1}</td>
@@ -231,6 +249,7 @@ export const generateStandaloneHTML = (zoneData: Zone): string => {
                 <td class="px-3 py-3 text-sm text-slate-600 align-top">${translateCategory(event.category)}</td>
                 <td class="px-3 py-3 text-sm text-slate-600 align-top">${formatSituation(event.situation)}</td>
                 <td class="px-3 py-3 text-sm text-slate-600 align-top">${event.errorMessage || 'N/A'}</td>
+                <td class="px-3 py-3 text-sm text-slate-600 align-top">${detailsHTML}</td>
                 <td class="px-3 py-3 text-sm text-slate-600 align-top">${action}</td>
                 <td class="px-3 py-3 text-sm text-slate-600 align-top">${solution}</td>
                 <td class="px-3 py-3 text-sm align-top text-center action-cell">

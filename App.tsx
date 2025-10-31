@@ -326,6 +326,8 @@ const App: React.FC = () => {
           const nroCuenta = findValue(d, ['Streetlight/Nro_CUENTA', 'nro_cuenta', 'cuenta']);
           const situation = findValue(d, ['situacion', 'situación', 'Streetlight/Situación', 'Streetlight/SituaciÃ³n']);
           
+          const measuredPower = findValue(d, ['Event monitor/Potencia medida del sistema', 'potencia medida']);
+          const voltage = findValue(d, ['Event monitor/Voltaje', 'voltaje']);
           const reportedDate = formatShortDate(rawReportedDate);
 
           const lat = parseFloat(String(latStr).replace(',', '.'));
@@ -347,7 +349,9 @@ const App: React.FC = () => {
               municipio: municipio !== undefined ? String(municipio) : null, 
               reportedDate: reportedDate !== undefined ? reportedDate : null,
               situation: situation !== undefined ? String(situation) : null,
-              nroCuenta: nroCuenta !== undefined ? String(nroCuenta) : null
+              nroCuenta: nroCuenta !== undefined ? String(nroCuenta) : null,
+              measuredPower: measuredPower !== undefined ? String(measuredPower) : null,
+              voltage: voltage !== undefined ? String(voltage) : null,
           };
         });
         
@@ -745,7 +749,7 @@ const App: React.FC = () => {
                         }
 
                         const optimizedChunk = await optimizeRouteLocally(depot, chunk);
-                        const polyline = await fetchRoutePolyline(depot, optimizedChunk);
+                        const polyline = await fetchRoutePolyline(depot, chunk);
                         
                         routes.push({
                             name: `${depot.zoneName} - ${municipioDisplayName}`,
@@ -982,6 +986,7 @@ const App: React.FC = () => {
                               <li><strong>Municipio:</strong> <code>Streetlight/Municipio</code> (para asignación de zona)</li>
                               <li><strong>Nro. de Cuenta:</strong> <code>Streetlight/Nro_CUENTA</code> (para detectar eventos de tablero)</li>
                               <li><strong>Situación:</strong> <code>Streetlight/Situación</code> (para detalles adicionales)</li>
+                               <li><strong>Datos Técnicos:</strong> <code>Event monitor/Potencia medida del sistema</code>, <code>Event monitor/Voltaje</code></li>
                           </ul>
                       </div>
                        <div>

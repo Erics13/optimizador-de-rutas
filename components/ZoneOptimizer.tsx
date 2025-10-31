@@ -266,11 +266,24 @@ const exportToPDF = async (
         const route = zoneData.optimizedRoute;
         if (!route || route.length === 0) return;
 
-        const tableColumn = ["#", "ID Luminaria / OLC", "ID Gabinete", "Potencia", "Fecha Reporte", "Categoría", "Situación", "Mensaje de Error", "Acción", "Posible Solución", "Actuación / Observaciones"];
+        const tableColumn = ["#", "ID Luminaria / OLC", "ID Gabinete", "Potencia", "Fecha Reporte", "Categoría", "Situación", "Mensaje de Error", "Detalles Técnicos", "Acción", "Posible Solución", "Actuación / Observaciones"];
         const tableRows: (string|number)[][] = [];
 
         route.forEach((event, index) => {
             const { action, solution } = getTroubleshootingInfo(event);
+            const message = normalizeForMatch(event.errorMessage || '');
+            const details = [];
+            const isCurrentError = message.includes('la corriente medida es menor que lo esperado') || message.includes('la corriente medida para la combinacion de driver y lampara es mayor') || message.includes('corte de luz parcial') || message.includes('posible falla en el driver');
+            const isVoltageError = message.includes('el voltaje de la red electrica de entrada detectado del sistema es muy bajo o muy alto');
+
+            if (isCurrentError) {
+                if (event.measuredPower) details.push(`Pot. Medida: ${event.measuredPower}`);
+                if (event.voltage) details.push(`Voltaje: ${event.voltage}`);
+            } else if (isVoltageError) {
+                if (event.voltage) details.push(`Voltaje: ${event.voltage}`);
+            }
+            const detailsText = details.join('\n') || 'N/A';
+
             tableRows.push([
                 index + 1,
                 `${event.luminaireId}\n${event.olcId || 'N/A'}`,
@@ -280,6 +293,7 @@ const exportToPDF = async (
                 translateCategory(event.category) || 'N/A',
                 event.situation || 'N/A',
                 event.errorMessage || 'N/A',
+                detailsText,
                 action,
                 solution,
                 ''
@@ -297,16 +311,17 @@ const exportToPDF = async (
             styles: { font: 'helvetica', cellPadding: 2, fontSize: 8, valign: 'middle' },
             columnStyles: {
                 0: { cellWidth: 10 },
-                1: { cellWidth: 40 },
+                1: { cellWidth: 35 },
                 2: { cellWidth: 20 },
                 3: { cellWidth: 18 },
-                4: { cellWidth: 20 },
-                5: { cellWidth: 20 },
+                4: { cellWidth: 18 },
+                5: { cellWidth: 18 },
                 6: { cellWidth: 18 },
-                7: { cellWidth: 32 },
-                8: { cellWidth: 32 },
-                9: { cellWidth: 32 },
-                10: { cellWidth: 28 }
+                7: { cellWidth: 30 },
+                8: { cellWidth: 22 },
+                9: { cellWidth: 28 },
+                10: { cellWidth: 28 },
+                11: { cellWidth: 24 }
             },
             didParseCell: (data) => { if (data.section === 'body' && data.column.index === 1) { data.cell.styles.fontStyle = 'bold'; } },
             didDrawPage: (data) => {
@@ -536,6 +551,7 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData, isHighli
                         <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Categoría</th>
                         <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Situación</th>
                         <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Mensaje de Error</th>
+                        <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Detalles Técnicos</th>
                         <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Acción</th>
                         <th scope="col" className={`px-3 py-3 text-left text-xs font-medium ${headerTextClass} uppercase tracking-wider`}>Posible Solución</th>
                       </tr>
@@ -587,12 +603,32 @@ export const ZoneOptimizer: React.FC<ZoneOptimizerProps> = ({ zoneData, isHighli
                                 <td className="px-3 py-3 text-sm text-slate-600 align-top">
                                 <div className={`px-2 py-1 text-xs rounded-md ${event.errorMessage ? 'bg-red-100 text-red-800' : 'text-slate-500'}`}>{event.errorMessage || 'N/A'}</div>
                                 </td>
+                                <td className="px-3 py-3 text-sm text-slate-600 align-top">
+                                  {(() => {
+                                    const message = normalizeForMatch(event.errorMessage || '');
+                                    const details = [];
+
+                                    const isCurrentError = message.includes('la corriente medida es menor que lo esperado') || message.includes('la corriente medida para la combinacion de driver y lampara es mayor') || message.includes('corte de luz parcial') || message.includes('posible falla en el driver');
+                                    const isVoltageError = message.includes('el voltaje de la red electrica de entrada detectado del sistema es muy bajo o muy alto');
+
+                                    if (isCurrentError) {
+                                        if (event.measuredPower) details.push(<span key="power"><strong>Pot. Medida:</strong> {event.measuredPower}</span>);
+                                        if (event.voltage) details.push(<span key="volt-c"><strong>Voltaje:</strong> {event.voltage}</span>);
+                                    } else if (isVoltageError) {
+                                        if (event.voltage) details.push(<span key="volt-v"><strong>Voltaje:</strong> {event.voltage}</span>);
+                                    }
+
+                                    if (details.length === 0) return <span className="text-slate-400">-</span>;
+
+                                    return <div className="flex flex-col space-y-1">{details}</div>;
+                                  })()}
+                                </td>
                                 <td className="px-3 py-3 text-sm text-slate-600 align-top">{action}</td>
                                 <td className="px-3 py-3 text-sm text-slate-600 align-top">{solution}</td>
                             </tr>
                           )
                       }) : (
-                      <tr><td colSpan={10} className="text-center py-4 text-sm text-slate-500">No hay datos de ruta para mostrar.</td></tr>
+                      <tr><td colSpan={11} className="text-center py-4 text-sm text-slate-500">No hay datos de ruta para mostrar.</td></tr>
                       )}
                   </tbody>
                 </table>

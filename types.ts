@@ -24,6 +24,9 @@ export interface SystemEvent {
   potContrat?: string | null;
   direccion?: string | null;
   tension?: string | null;
+  // New fields for technical details
+  measuredPower?: string | null;
+  voltage?: string | null;
 }
 
 export interface Depot {

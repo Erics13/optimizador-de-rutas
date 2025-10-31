@@ -18,7 +18,7 @@ const createHomeIcon = () => {
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="32" height="32">
       <defs><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="black" flood-opacity="0.3"/></filter></defs>
       <path fill="#16a34a" filter="url(#shadow)" d="M11.47 3.84a.75.75 0 011.06 0l8.69 8.69a.75.75 0 101.06-1.06l-8.689-8.69a2.25 2.25 0 00-3.182 0l-8.69 8.69a.75.75 0 001.061 1.06l8.69-8.69z" />
-      <path fill="#16a34a" filter="url(#shadow)" d="M12 5.432l8.159 8.159c.026.026.05.054.07.084v6.101a2.25 2.25 0 01-2.25 2.25H15a.75.75 0 01-.75-.75v-4.5a.75.75 0 00-.75-.75h-3a.75.75 0 00-.75.75V21a.75.75 0 01-.75.75H5.25a2.25 2.25 0 01-2.25-2.25v-6.101c.02-.03.044-.058.07-.084L12 5.432z" />
+      <path fill="#16a34a" filter="url(#shadow)" d="M12 5.432l8.159 8.159c.026.026.05.054.07.084v6.101a2.25 2.25 0 01-2.25 2.25H15a.75.75 0 01-.75-.75v-4.5a.75.75 0 00-.75-.75h-3a.75.75 0 00-.75-.75V21a.75.75 0 01-.75.75H5.25a2.25 2.25 0 01-2.25-2.25v-6.101c.02-.03.044-.058.07-.084L12 5.432z" />
     </svg>
   `;
   return new L.Icon({
@@ -118,40 +118,23 @@ const translateCategory = (category: string): string => {
     return translations[lowerCategory] || category;
 };
 
-interface MapUpdaterProps {
-  bounds: LatLngBoundsExpression;
-}
-
-const MapUpdater: React.FC<MapUpdaterProps> = ({ bounds }) => {
-  const map = useMap();
-  useEffect(() => {
-    const animationFrameId = requestAnimationFrame(() => {
-      try {
-        if (map.getContainer()) {
-          map.invalidateSize();
-          if (bounds) {
-            const validBounds = Array.isArray(bounds) ? L.latLngBounds(bounds) : bounds;
-            if (validBounds.isValid()) {
-                map.fitBounds(validBounds, { padding: [25, 25] });
-            }
-          }
-        }
-      } catch(e) {
-        console.error("Error al actualizar el mapa:", e);
-      }
-    });
-
-    return () => {
-      cancelAnimationFrame(animationFrameId);
-    };
-  }, [map, bounds]);
-  return null;
-};
-
 interface RouteMapProps {
   zoneData: Zone;
   onMapReady?: (elements: { map: L.Map; polyline: L.Polyline | null }) => void;
 }
+
+const MapUpdater: React.FC<{ bounds: L.LatLngBoundsExpression }> = ({ bounds }) => {
+    const map = useMap();
+    useEffect(() => {
+        const validBounds = L.latLngBounds(bounds);
+        if (validBounds.isValid()) {
+            map.fitBounds(validBounds, { padding: [25, 25] });
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []); // Run only on mount to set initial view
+    return null;
+};
+
 
 export const RouteMap: React.FC<RouteMapProps> = ({ zoneData, onMapReady }) => {
     const route = zoneData.optimizedRoute;
@@ -173,22 +156,21 @@ export const RouteMap: React.FC<RouteMapProps> = ({ zoneData, onMapReady }) => {
     
     const depotPosition: LatLngTuple = [zoneData.depot.lat, zoneData.depot.lon];
     
-    // Calculate bounds based only on the events to center the view on the work area.
     const allPointsForBounds: LatLngTuple[] = route.map(event => [event.lat, event.lon]);
     if (zoneData.cabinetData) {
         allPointsForBounds.push([zoneData.cabinetData.lat, zoneData.cabinetData.lon]);
     }
-    // If there are no points, fall back to the depot to prevent an error.
     if (allPointsForBounds.length === 0) {
         allPointsForBounds.push(depotPosition);
     }
     
-    const centerPosition: LatLngTuple = route.length > 0 ? [route[0].lat, route[0].lon] : depotPosition;
+    const bounds = L.latLngBounds(allPointsForBounds);
+    const center = bounds.isValid() ? bounds.getCenter() : depotPosition;
     
     return (
-        <MapContainer center={centerPosition} zoom={13} style={{ height: '100%', width: '100%' }} scrollWheelZoom={true}>
+        <MapContainer center={center} zoom={13} style={{ height: '100%', width: '100%' }} scrollWheelZoom={true}>
+            <MapUpdater bounds={bounds} />
             <MapInstanceProvider />
-            <MapUpdater bounds={allPointsForBounds} />
             <TileLayer
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &amp; OSRM'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
