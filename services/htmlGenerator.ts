@@ -133,6 +133,48 @@ export const generateStandaloneHTML = (zoneData: Zone): string => {
     const isMaxPriority = zoneData.priority === 1 && zoneData.cabinetData;
     const isHighPriority = zoneData.isCabinetRoute && !isMaxPriority;
 
+    // --- Power Summary Calculation ---
+    const routeForSummary = isMaxPriority ? (zoneData.cabinetData?.affectedLuminaires || []) : route;
+    const powerSummary = new Map<number, number>();
+    if (routeForSummary.length > 0) {
+        for (const event of routeForSummary) {
+            const power = event.power || 0;
+            powerSummary.set(power, (powerSummary.get(power) || 0) + 1);
+        }
+    }
+
+    const summaryRowsHTML = Array.from(powerSummary.entries())
+        .sort(([powerA], [powerB]) => powerA - powerB)
+        .map(([power, count]) => `
+            <tr>
+                <td class="px-3 py-1.5 font-medium text-slate-700">${power} W</td>
+                <td class="px-3 py-1.5 text-right text-slate-600 font-bold">${count}</td>
+            </tr>
+        `).join('');
+
+    let powerSummaryHTML = '';
+    if (summaryRowsHTML) {
+        powerSummaryHTML = `
+            <div class="mt-4">
+                <h4 class="text-sm font-semibold text-slate-600 mb-2">Resumen de Repuestos por Potencia</h4>
+                <div class="overflow-x-auto inline-block">
+                    <table class="border text-sm rounded-lg">
+                        <thead class="bg-slate-50">
+                            <tr>
+                                <th class="px-3 py-1.5 text-left font-medium text-slate-500 border-b">Potencia (W)</th>
+                                <th class="px-3 py-1.5 text-right font-medium text-slate-500 border-b">Cantidad</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-200">
+                            ${summaryRowsHTML}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+    }
+    // --- End Power Summary ---
+
     let tableHeadersHTML = '';
     let tableBodyHTML = '';
     let tableTitle = 'Hoja de Ruta';
@@ -294,7 +336,8 @@ export const generateStandaloneHTML = (zoneData: Zone): string => {
         <div class="bg-white rounded-xl shadow-lg overflow-hidden">
             <div class="p-6 bg-slate-50 border-b border-slate-200">
                 <h3 class="text-xl font-bold ${titleClass}">${zoneData.name}</h3>
-                <p class="text-sm text-slate-500 mt-1">Total de luminarias en esta hoja de ruta: ${route.length}</p>
+                <p class="text-sm text-slate-500 mt-1">Total de luminarias en esta hoja de ruta: ${routeForSummary.length}</p>
+                ${powerSummaryHTML}
             </div>
             <div class="p-6 grid grid-cols-1 gap-8">
                 <div>

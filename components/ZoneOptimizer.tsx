@@ -231,9 +231,29 @@ const exportToPDF = async (
 
     const titleWithDate = `${title} ${dateString}`;
 
+    // --- Power Summary Calculation ---
+    const routeForSummary = (zoneData.priority === 1 && zoneData.cabinetData)
+        ? zoneData.cabinetData.affectedLuminaires
+        : (zoneData.optimizedRoute || []);
+
+    const powerSummary = new Map<number, number>();
+    if (routeForSummary.length > 0) {
+        for (const event of routeForSummary) {
+            const power = event.power || 0;
+            powerSummary.set(power, (powerSummary.get(power) || 0) + 1);
+        }
+    }
+
+    const summaryBody = Array.from(powerSummary.entries())
+        .sort(([powerA], [powerB]) => powerA - powerB)
+        .map(([power, count]) => [`${power} W`, count.toString()]);
+    // --- End Power Summary ---
+
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(16);
     doc.text(titleWithDate, 14, 22);
+
+    const mainTableStartY = 30;
     
     if (zoneData.priority === 1 && zoneData.cabinetData) {
         const cabinet = zoneData.cabinetData;
@@ -247,7 +267,7 @@ const exportToPDF = async (
         ];
 
         autoTable(doc, {
-            startY: 30,
+            startY: mainTableStartY,
             theme: 'striped',
             headStyles: { fillColor: [220, 38, 38], textColor: [255, 255, 255], fontStyle: 'bold' },
             styles: { font: 'helvetica', fontSize: 10, cellPadding: 3 },
@@ -305,25 +325,51 @@ const exportToPDF = async (
         autoTable(doc, {
             head: [tableColumn],
             body: tableRows,
-            startY: 30,
+            startY: mainTableStartY,
             theme: 'grid',
             headStyles: { fillColor: headFillColor, textColor: [255, 255, 255], fontStyle: 'bold' },
             styles: { font: 'helvetica', cellPadding: 2, fontSize: 8, valign: 'middle' },
             columnStyles: {
                 0: { cellWidth: 10 },
-                1: { cellWidth: 35 },
+                1: { cellWidth: 40 },
                 2: { cellWidth: 20 },
                 3: { cellWidth: 18 },
                 4: { cellWidth: 18 },
                 5: { cellWidth: 18 },
                 6: { cellWidth: 18 },
-                7: { cellWidth: 30 },
+                7: { cellWidth: 28 },
                 8: { cellWidth: 22 },
-                9: { cellWidth: 28 },
-                10: { cellWidth: 28 },
+                9: { cellWidth: 26 },
+                10: { cellWidth: 27 },
                 11: { cellWidth: 24 }
             },
             didParseCell: (data) => { if (data.section === 'body' && data.column.index === 1) { data.cell.styles.fontStyle = 'bold'; } },
+            didDrawPage: (data) => {
+                const str = `Página ${data.pageNumber}`;
+                doc.setFont('helvetica', 'normal');
+                doc.setFontSize(8);
+                const pageHeight = doc.internal.pageSize.height || doc.internal.pageSize.getHeight();
+                doc.text(str, data.settings.margin.left, pageHeight - 10);
+            }
+        });
+    }
+
+    if (summaryBody.length > 0) {
+        doc.addPage('landscape');
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(16);
+        doc.text("Resumen de Repuestos por Potencia", 14, 22);
+
+        autoTable(doc, {
+            head: [['Potencia (W)', 'Cantidad de Repuestos']],
+            body: summaryBody,
+            startY: 28,
+            theme: 'grid',
+            headStyles: { fillColor: [100, 116, 139], fontSize: 9, cellPadding: 1.5, fontStyle: 'bold' },
+            bodyStyles: { fontSize: 8, cellPadding: 1.5 },
+            columnStyles: { 0: { cellWidth: 45 }, 1: { cellWidth: 45 } },
+            margin: { left: 14 },
+            tableWidth: 'wrap',
             didDrawPage: (data) => {
                 const str = `Página ${data.pageNumber}`;
                 doc.setFont('helvetica', 'normal');
